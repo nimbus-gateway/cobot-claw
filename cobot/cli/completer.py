@@ -8,8 +8,9 @@ from cobot.cli.session import CobotSession
 
 SLASH_COMMANDS = [
     "/help", "/status", "/poses", "/scenarios",
-    "/run", "/teach", "/agent", "/model",
-    "/fleet", "/config", "/history", "/clear", "/exit",
+    "/run", "/teach", "/ingest", "/reconnect",
+    "/agent", "/model", "/fleet", "/config",
+    "/history", "/clear", "/exit",
 ]
 
 AGENT_NAMES = ["orchestrator", "scenario", "config", "safety"]
@@ -22,10 +23,11 @@ class CobotCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
 
-        if text.startswith("/run "):
-            prefix = text[5:]
+        if text.startswith("/run ") or text.startswith("/teach "):
+            offset = 5 if text.startswith("/run ") else 7
+            prefix = text[offset:]
             store = Path(self.session.cfg.scenarios.store_path)
-            for f in store.glob("*.yaml"):
+            for f in sorted(store.glob("*.yaml")):
                 if f.stem.startswith(prefix):
                     yield Completion(f.stem, start_position=-len(prefix))
 

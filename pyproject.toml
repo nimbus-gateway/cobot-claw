@@ -8,7 +8,8 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7",
-    "pydantic-ai>=0.0.14",
+    "pydantic-ai[anthropic,openai]>=0.0.14",
+    "anthropic>=0.40",
     "openai>=1.30",
     "mcp>=1.0",
     "typer>=0.12",
@@ -20,8 +21,13 @@ dependencies = [
 
 [project.optional-dependencies]
 rag = [
-    "llama-index>=0.10",
+    "llama-index-core>=0.10",
     "llama-index-vector-stores-chroma>=0.1",
+    "llama-index-readers-file>=0.1",
+    "llama-index-embeddings-huggingface>=0.3",
+    "llama-index-llms-anthropic>=0.6",
+    "llama-index-llms-openai>=0.3",
+    "llama-index-llms-openai-like>=0.3",
     "chromadb>=0.5",
 ]
 dev = [

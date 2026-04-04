@@ -98,10 +98,21 @@ async def _connect_session(session: CobotSession) -> None:
 
     executor = ScenarioExecutor(arm, tool_mcps, perception)  # type: ignore[arg-type]
 
+    from cobot.agents.deps import ConfigAgentDeps
+    from cobot.rag.pipeline import RAGPipeline
+
+    rag = RAGPipeline(db_path=session.cfg.rag.db_path, cfg=session.cfg)
+    config_deps = ConfigAgentDeps(
+        arm_mcp=arm,  # type: ignore[arg-type]
+        rag_pipeline=rag,
+        scenarios_store_path=session.cfg.scenarios.store_path,
+        cfg=session.cfg,
+    )
+
     session.deps = OrchestratorDeps(
         scenario_deps=ScenarioAgentDeps(arm, tool_mcps, executor, perception, session.cfg),  # type: ignore[arg-type]
         cfg=session.cfg,
-        config_deps=None,
+        config_deps=config_deps,
     )
 
 
@@ -169,9 +180,11 @@ def ingest(
     path: str = typer.Option("./manuals", "--path", help="Directory of robot manual PDFs"),
     config: str = typer.Option("cobot.yaml", "--config", "-c"),
 ) -> None:
-    """Ingest robot manual PDFs into the RAG knowledge base (requires Phase 6 extras)."""
-    import subprocess
-    subprocess.run(["python", "-m", "cobot.rag.ingest", "--path", path], check=True)
+    """Ingest robot manual PDFs into the RAG knowledge base (requires [rag] extras)."""
+    from cobot.rag.ingest import main as ingest_main
+    import sys
+    sys.argv = ["cobot-claw ingest", "--path", path, "--config", config]
+    ingest_main()
 
 
 if __name__ == "__main__":

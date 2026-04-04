@@ -82,12 +82,99 @@ def _build_bindings() -> KeyBindings:
 # Slash commands
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Teach mode
+# ---------------------------------------------------------------------------
+
+async def _cmd_teach(session: CobotSession, scenario_name: str, duration_sec: float = 30.0) -> None:
+    """Record arm waypoints in freedrive and save as a scenario YAML."""
+    from rich.live import Live
+    from rich.spinner import Spinner
+
+    if session.deps is None or session.deps.config_deps is None:
+        print_error("Config Agent not available (no connection or RAG not wired).")
+        return
+
+    console.print(
+        f"\n  [bold]Teach mode[/bold] — recording [cyan]{scenario_name}[/cyan] "
+        f"for [bold]{int(duration_sec)}s[/bold]\n"
+        "  [dim]Enable freedrive on the robot pendant, then press Enter to start…[/dim]"
+    )
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        console.print("  [yellow]Cancelled.[/yellow]")
+        return
+
+    live = Live(
+        Spinner("dots", text=f"[dim]Recording waypoints for {int(duration_sec)}s…[/dim]"),
+        console=console,
+        refresh_per_second=10,
+        transient=True,
+    )
+    live.start()
+    try:
+        from cobot.agents.config_agent import build_config_agent
+        agent = build_config_agent(session.cfg)
+        result = await agent.run(
+            f"teach_mode scenario_name={scenario_name} duration_sec={duration_sec}",
+            deps=session.deps.config_deps,
+        )
+        live.stop()
+        console.print(f"\n  [green]✓[/green]  {result.output}\n")
+    except Exception as e:
+        live.stop()
+        print_error(f"Teach mode failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Manual ingest
+# ---------------------------------------------------------------------------
+
+async def _cmd_ingest(session: CobotSession, path: str) -> None:
+    """Index robot manuals into the RAG knowledge base."""
+    from rich.live import Live
+    from rich.spinner import Spinner
+
+    if session.deps is None or session.deps.config_deps is None:
+        print_error("Config Agent not available.")
+        return
+
+    live = Live(
+        Spinner("dots", text=f"[dim]Indexing {path}…[/dim]"),
+        console=console,
+        refresh_per_second=10,
+        transient=True,
+    )
+    live.start()
+    try:
+        result = await session.deps.config_deps.rag_pipeline.ingest(path)
+        live.stop()
+        if result.get("ok"):
+            console.print(
+                f"\n  [green]✓[/green]  Indexed [bold]{result['indexed']}[/bold] document(s) "
+                f"into [dim]{result['db_path']}[/dim]\n"
+            )
+        else:
+            print_error(result.get("message", "Ingest failed."))
+    except Exception as e:
+        live.stop()
+        print_error(f"Ingest failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Slash commands
+# ---------------------------------------------------------------------------
+
 _HELP_TEXT = """
 [bold]Slash commands[/bold]
   [cyan]/status[/cyan]              Robot state and motion info
   [cyan]/scenarios[/cyan]           List saved scenarios
   [cyan]/run[/cyan] [dim]<name>[/dim]          Execute a scenario
   [cyan]/run[/cyan] [dim]<name> --dry[/dim]    Preview steps without moving
+  [cyan]/teach[/cyan] [dim]<name>[/dim]        Record arm movements and save as scenario
+  [cyan]/teach[/cyan] [dim]<name> --dur 60[/dim]  Teach mode with custom duration (seconds)
+  [cyan]/ingest[/cyan] [dim][path][/dim]       Index robot manuals into RAG knowledge base
   [cyan]/reconnect[/cyan]           Reconnect to robot MCP servers
   [cyan]/clear[/cyan]               Clear the screen
   [cyan]/exit[/cyan]                Quit
@@ -97,6 +184,8 @@ _HELP_TEXT = """
   [dim]run the pick and place sequence[/dim]
   [dim]what is the current robot state?[/dim]
   [dim]open the gripper slowly[/dim]
+  [dim]what is the max payload for the ur3e?[/dim]
+  [dim]how do I configure the gripper force?[/dim]
 """
 
 
@@ -121,6 +210,25 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
                 dry = "--dry" in parts
                 await cmd_run(session, parts[1], dry_run=dry)
 
+        case "/teach":
+            name = parts[1] if len(parts) > 1 else None
+            if not name:
+                print_error("Usage: /teach <scenario_name> [--dur <seconds>]")
+            else:
+                dur = 30.0
+                if "--dur" in parts:
+                    idx = parts.index("--dur")
+                    try:
+                        dur = float(parts[idx + 1])
+                    except (IndexError, ValueError):
+                        print_error("--dur requires a number of seconds")
+                        return
+                await _cmd_teach(session, name, duration_sec=dur)
+
+        case "/ingest":
+            path = parts[1] if len(parts) > 1 else "./manuals"
+            await _cmd_ingest(session, path)
+
         case "/reconnect":
             from cobot.cli.app import _connect_session
             console.print("  [dim]Reconnecting to MCP servers…[/dim]")
@@ -133,6 +241,7 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
 
         case "/clear":
             console.clear()
+            session.message_history = []
 
         case "/exit":
             raise SystemExit(0)
@@ -164,18 +273,14 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
             transient=True,
         )
         live.start()
-        first_node = True
 
-        async with agent.iter(text, deps=deps) as run:
+        async with agent.iter(text, deps=deps, message_history=session.message_history or None) as run:
             async for node in run:
-                if first_node:
-                    live.stop()
-                    first_node = False
-
                 if hasattr(node, "model_response"):
                     for part in node.model_response.parts:
                         if hasattr(part, "args_as_dict"):
-                            # new tool call → show a fresh spinner while it runs
+                            # tool call → swap spinner to show tool name
+                            live.stop()
                             live = Live(
                                 Spinner("dots", text=f"[dim]{part.tool_name}…[/dim]"),
                                 console=console,
@@ -213,6 +318,7 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
             pass
 
         output = run.result.output
+        session.message_history = run.result.all_messages()
         console.print()
         if isinstance(output, str):
             print_agent_response(output)

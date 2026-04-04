@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from cobot.config import CobotConfig, RobotConfig
 from cobot.agents.orchestrator import OrchestratorDeps
+from pydantic_ai.messages import ModelMessage
 
 
 @dataclass
@@ -21,6 +22,7 @@ class CobotSession:
     active_agent: str = "orchestrator"
     deps: OrchestratorDeps | None = None
     history: list[dict] = field(default_factory=list)
+    message_history: list[ModelMessage] = field(default_factory=list)
     mcp_status: dict[str, bool] = field(default_factory=dict)  # {"arm": True, "gripper": False, ...}
 
     @property

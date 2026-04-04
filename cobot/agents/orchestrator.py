@@ -39,8 +39,9 @@ def build_orchestrator(cfg: CobotConfig) -> Agent:
         system_prompt=(
             "You orchestrate a UR robot system. "
             "For robot movements and scenario execution, delegate to run_scenario_task. "
-            "For configuration, setup, manuals, and teach-by-demo, delegate to run_config_task. "
-            "For status queries, call get_robot_status directly. "
+            "For ANY question about the robot — specs, safety features, error codes, payload limits, "
+            "configuration, setup, manuals, or teach-by-demo — delegate to run_config_task. "
+            "Only call get_robot_status for live status queries (is the robot connected? what joints are active?). "
             "Always confirm dangerous operations before executing."
         ),
     )
@@ -75,17 +76,18 @@ def build_orchestrator(cfg: CobotConfig) -> Agent:
     ) -> str:
         """Delegate a movement or scenario execution task to the Scenario Agent."""
         result = await _scenario_agent.run(task_description, deps=ctx.deps.scenario_deps)
-        return str(result.data)
+        return str(result.output)
 
     @agent.tool
     async def run_config_task(
         ctx: RunContext[OrchestratorDeps],
         task_description: str,
     ) -> str:
-        """Delegate a configuration, manual query, or teach task to the Config Agent (Phase 6+)."""
+        """Delegate to the Config Agent for manual Q&A (specs, safety, error codes, payload limits),
+        configuration, setup guidance, or teach-by-demo recording."""
         if ctx.deps.config_deps is None:
             return "Config Agent not yet available. Install [rag] extras and configure Phase 6."
         result = await _config_agent.run(task_description, deps=ctx.deps.config_deps)
-        return result.data
+        return result.output
 
     return agent

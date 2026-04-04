@@ -133,6 +133,9 @@ cobot-claw run pick_place --dry-run  # preview steps without moving
 | `/scenarios` | List saved scenarios |
 | `/run <name>` | Execute a scenario |
 | `/run <name> --dry` | Preview scenario steps without moving |
+| `/teach <name>` | Record arm movements and save as scenario |
+| `/teach <name> --dur 60` | Teach mode with custom duration (seconds) |
+| `/ingest [path]` | Index robot manuals into RAG knowledge base |
 | `/reconnect` | Reconnect to robot MCP servers |
 | `/clear` | Clear the screen |
 | `/help` or `?` | Show all commands |
@@ -271,6 +274,54 @@ Supported step types: `move_named_pose`, `move_joints`, `move_tcp_pose`, `tool_a
 
 ---
 
+## Manual Q&A and Teach Mode (Phase 6)
+
+Ask natural language questions about your robot, or record arm movements directly from the REPL.
+
+### Setup
+
+```bash
+pip install -e ".[rag]"
+
+# Place PDF/TXT/MD manuals in ./manuals, then index them:
+cobot-claw ingest --path ./manuals
+
+# Or inside the REPL:
+> /ingest ./manuals
+```
+
+### Manual Q&A
+
+Once indexed, ask questions in plain English:
+
+```
+> what is the max payload for the ur3e?
+> how do I set the TCP offset?
+> what does error code 53 mean?
+```
+
+The Config Agent searches the indexed manuals and returns grounded answers.
+
+### Teach Mode
+
+Record waypoints while the robot arm is in **freedrive**:
+
+```
+> /teach my_motion
+> /teach pick_sequence --dur 60
+```
+
+The REPL prompts you to enable freedrive on the pendant, then records joint states for the specified duration (default 30 s). The motion is automatically saved as a scenario YAML in `cobot/scenarios/store/` — ready to run with `/run my_motion`.
+
+You can also ask conversationally:
+
+```
+> record a new picking motion called box_pick
+> teach me a new scenario for 45 seconds
+```
+
+---
+
 ## Verification
 
 ```bash
@@ -299,7 +350,7 @@ pytest -v
 | 3 | Scenario schema, executor, example YAML, RAG stub | **Done** |
 | 4 | Scenario Agent + Config Agent + Orchestrator Agent | **Done** |
 | 5 | CLI — REPL, slash commands, streaming output | **Done** |
-| 6 | Config Agent RAG + `/teach` (real ChromaDB/LlamaIndex) | Later |
+| 6 | Config Agent RAG + `/teach` (real ChromaDB/LlamaIndex) | **Done** |
 | 7 | Safety Monitor | Future |
 | 8 | Perception Agent + sensor MCPs | Future |
 
