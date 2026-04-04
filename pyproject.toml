@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cobot-claw"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-ai>=0.0.14",
+    "openai>=1.30",
+    "mcp>=1.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "prompt_toolkit>=3.0",
+    "pyyaml>=6.0",
+    "structlog>=24.0",
+]
+
+[project.optional-dependencies]
+rag = [
+    "llama-index>=0.10",
+    "llama-index-vector-stores-chroma>=0.1",
+    "chromadb>=0.5",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+cobot-claw = "cobot.cli.app:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cobot"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: requires live MCP servers — skipped in offline runs",
+]

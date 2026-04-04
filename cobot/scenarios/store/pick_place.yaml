@@ -1,0 +1,56 @@
+name: pick-place-box
+description: Pick a box from station A and place it at station B
+robot: ur3e
+
+steps:
+  - type: move_named_pose
+    pose: home
+    duration_sec: 5.0
+
+  - type: move_tcp_pose
+    x: 0.30
+    y: 0.10
+    z: 0.20
+    speed: 0.05
+    perception:
+      locate: "red_box"
+    fallback_position:
+      x: 0.30
+      y: 0.10
+      z: 0.20
+
+  - type: move_tcp_pose
+    x: 0.30
+    y: 0.10
+    z: 0.12
+    speed: 0.02
+
+  - type: tool_action
+    tool: gripper
+    action: close         # Robotiq: close(speed, force) — 0..100
+    params:
+      speed: 50
+      force: 60
+    arm_recovery_sec: 6.0  # wait for UR External Control to restore after gripper script
+
+  - type: check_motion_complete
+    timeout_sec: 8.0
+
+  - type: move_named_pose
+    pose: retract
+
+  - type: move_tcp_pose
+    x: -0.20
+    y: 0.30
+    z: 0.15
+    speed: 0.05
+
+  - type: tool_action
+    tool: gripper
+    action: open          # Robotiq: open(speed, force)
+    params:
+      speed: 50
+    arm_recovery_sec: 5.0  # wait for UR External Control to restore after gripper script
+
+  - type: move_named_pose
+    pose: home

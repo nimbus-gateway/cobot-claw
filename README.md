@@ -4,7 +4,7 @@ Agentic CLI for controlling UR robots via natural language — powered by local 
 
 ---
 
-## cobot-claw-cli
+## Preview
 
 ![cobot-claw welcome screen](docs/claw_welcome.png)
 

@@ -1,0 +1,37 @@
+llm:
+  # provider options: local (Ollama) | openai | anthropic
+  provider: local
+  base_url: http://localhost:11434/v1   # only used for provider: local
+  api_key: ""                           # or set OPENAI_API_KEY / ANTHROPIC_API_KEY env var
+
+fleet:
+  - name: ur3e
+    model_type: ur3e
+    ip: 192.168.1.2
+    arm_mcp_url: http://localhost:8765/mcp
+    gripper_mcp_url: http://localhost:8001/mcp   # omit if no end-effector
+
+agents:
+  orchestrator:
+    model: qwen2.5:72b      # or gpt-4o, claude-sonnet-4-6
+  scenario:
+    model: qwen2.5:14b
+  config:
+    model: qwen2.5:14b
+  safety:
+    model: qwen2.5:7b
+    poll_interval_sec: 1.0
+    alert_threshold: WARNING
+  perception:
+    enabled: false
+    endpoint: null
+    model: qwen2.5:14b
+
+scenarios:
+  store_path: ./cobot/scenarios/store
+
+rag:
+  manuals_path: ./manuals
+  db_path: ./chroma_db
+  chunk_size: 512
+  chunk_overlap: 64
