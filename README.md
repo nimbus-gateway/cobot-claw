@@ -10,6 +10,14 @@ Agentic CLI for controlling UR robots via natural language — powered by local 
 
 ---
 
+## Architecture
+
+![cobot-claw high-level architecture](docs/cobot-claw-architecture.png)
+
+> Full draw.io source: [docs/architecture.drawio](docs/architecture.drawio)
+
+---
+
 ## Overview
 
 cobot-claw lets you command UR robot arms and end-effector tools (grippers, vacuum pumps, and more) through plain English — no programming required. Just type what you want the robot to do and the system figures out how to do it.

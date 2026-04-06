@@ -129,6 +129,9 @@ def main(
     session = _build_session(config, robot)
     session.active_agent = agent
 
+    from cobot.observability import setup as obs_setup
+    obs_setup(session.cfg)
+
     async def _run() -> None:
         try:
             await _connect_session(session)

@@ -60,12 +60,18 @@ class RAGConfig(BaseModel):
     chunk_overlap: int = 64
 
 
+class ObservabilityConfig(BaseModel):
+    enabled: bool = False
+    token: str = ""   # Logfire project token — or set LOGFIRE_TOKEN env var
+
+
 class CobotConfig(BaseModel):
     llm: LLMConfig
     fleet: list[RobotConfig]
     agents: AgentsConfig
     scenarios: ScenariosConfig
     rag: RAGConfig
+    observability: ObservabilityConfig = ObservabilityConfig()
 
     def robot(self, name: str) -> RobotConfig:
         """Look up a robot by name. Raises KeyError if not found."""

@@ -35,3 +35,7 @@ rag:
   db_path: ./chroma_db
   chunk_size: 512
   chunk_overlap: 64
+
+observability:
+  enabled: false
+  token: ""     # Logfire project token — or set LOGFIRE_TOKEN env var
