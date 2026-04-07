@@ -48,7 +48,7 @@ class _OfflineMCP:
 
 
 def _make_offline_deps(session: CobotSession):
-    from cobot.agents.deps import ScenarioAgentDeps
+    from cobot.agents.deps import RoboticAgentDeps
     from cobot.agents.orchestrator import OrchestratorDeps
     from cobot.mcp.perception_contract import PerceptionClient
     from cobot.scenarios.executor import ScenarioExecutor
@@ -56,8 +56,8 @@ def _make_offline_deps(session: CobotSession):
     arm = _OfflineMCP()
     perception = PerceptionClient(enabled=False)
     executor = ScenarioExecutor(arm, {}, perception)  # type: ignore[arg-type]
-    scenario_deps = ScenarioAgentDeps(arm, {}, executor, perception, session.cfg)  # type: ignore[arg-type]
-    return OrchestratorDeps(scenario_deps=scenario_deps, cfg=session.cfg)
+    robotic_deps = RoboticAgentDeps(arm, {}, executor, perception, session.cfg)  # type: ignore[arg-type]
+    return OrchestratorDeps(robotic_deps=robotic_deps, cfg=session.cfg)
 
 
 # ---------------------------------------------------------------------------

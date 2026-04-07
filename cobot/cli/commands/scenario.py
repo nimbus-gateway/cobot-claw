@@ -17,7 +17,7 @@ async def cmd_run(session: CobotSession, name: str, dry_run: bool = False) -> No
         console.print(f"[red]Scenario '{name}' not found.[/red]")
         return
     scenario = ScenarioExecutor.load(path)
-    result = await session.deps.scenario_deps.executor.run(scenario, dry_run=dry_run)
+    result = await session.deps.robotic_deps.executor.run(scenario, dry_run=dry_run)
     color = "green" if result.success else "red"
     console.print(f"[{color}]{result.steps_completed}/{result.total_steps} steps completed[/{color}]")
     if result.error:

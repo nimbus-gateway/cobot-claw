@@ -130,8 +130,8 @@ def print_welcome(
     _AGENT_DESCRIPTIONS = [
         ("orchestrator", cfg.agents.orchestrator.model,
          "Routes commands, delegates to scenario or config agent"),
-        ("scenario",     cfg.agents.scenario.model,
-         "Plans and executes robot movements and tool actions"),
+        ("robotic",      cfg.agents.scenario.model,
+         "All robot interactions — status, moves, tools, scenarios"),
         ("safety",       cfg.agents.safety.model,
          "Monitors for unsafe states and blocks dangerous moves"),
         ("config",       cfg.agents.config.model,
@@ -217,11 +217,29 @@ def print_hint(message: str) -> None:
 
 def print_status_table(status: dict) -> None:
     table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_row("[dim]robot ip[/dim]", status.get("robot_ip", "—"))
+    table.add_row("[dim]robot ip[/dim]", str(status.get("robot_ip", "—")))
     table.add_row("[dim]has joint state[/dim]", str(status.get("has_joint_state", "—")))
     table.add_row("[dim]headless mode[/dim]", str(status.get("headless_mode", "—")))
     motion = status.get("motion", {})
     table.add_row("[dim]motion complete[/dim]", str(motion.get("complete", "—")))
+
+    joints = status.get("joints")
+    if joints:
+        joint_str = "  ".join(
+            f"{j['joint'].replace('_joint', '')}={j['value_deg']:.1f}°"
+            for j in joints
+        )
+        table.add_row("[dim]joints[/dim]", joint_str)
+
+    tcp = status.get("tcp_position_m")
+    if tcp:
+        table.add_row(
+            "[dim]tcp position[/dim]",
+            f"x={tcp.get('x', 0):.3f}  y={tcp.get('y', 0):.3f}  z={tcp.get('z', 0):.3f} m",
+        )
+
+    if warning := status.get("_warning"):
+        table.add_row("[dim yellow]warning[/dim yellow]", f"[yellow]{warning}[/yellow]")
     console.print(table)
 
 

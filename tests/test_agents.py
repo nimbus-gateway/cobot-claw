@@ -1,5 +1,5 @@
 """
-Tests for cobot/agents/ — deps, scenario agent tools, orchestrator deps.
+Tests for cobot/agents/ — deps, robotic agent tools, orchestrator deps.
 
 These tests exercise tool logic in isolation using mock MCPClients and a
 minimal CobotConfig. No LLM calls are made — we call tool functions directly
@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cobot.agents.deps import ScenarioAgentDeps, ConfigAgentDeps
+from cobot.agents.deps import RoboticAgentDeps, ConfigAgentDeps
 from cobot.agents.orchestrator import OrchestratorDeps, build_orchestrator
-from cobot.agents.scenario import build_scenario_agent, ScenarioResult
+from cobot.agents.robotic_agent import build_robotic_agent, RoboticAgentResult
 from cobot.agents.config_agent import build_config_agent
 from cobot.config import (
     CobotConfig, LLMConfig, RobotConfig, AgentsConfig,
@@ -61,17 +61,17 @@ def _make_mock_mcp(responses: dict | None = None) -> MagicMock:
     return arm
 
 
-def _make_scenario_deps(
+def _make_robotic_deps(
     arm_responses: dict | None = None,
     gripper_responses: dict | None = None,
     store_path: str = "./cobot/scenarios/store",
-) -> ScenarioAgentDeps:
+) -> RoboticAgentDeps:
     cfg = _make_cfg(store_path)
     arm = _make_mock_mcp(arm_responses)
     gripper = _make_mock_mcp(gripper_responses)
     perception = PerceptionClient()
     executor = ScenarioExecutor(arm, {"gripper": gripper}, perception)
-    return ScenarioAgentDeps(arm, {"gripper": gripper}, executor, perception, cfg)
+    return RoboticAgentDeps(arm, {"gripper": gripper}, executor, perception, cfg)
 
 
 def _get_tool(agent, name: str):
@@ -83,12 +83,12 @@ def _get_tool(agent, name: str):
 
 
 # ---------------------------------------------------------------------------
-# ScenarioAgentDeps
+# RoboticAgentDeps
 # ---------------------------------------------------------------------------
 
-class TestScenarioAgentDeps:
+class TestRoboticAgentDeps:
     def test_construction(self):
-        deps = _make_scenario_deps()
+        deps = _make_robotic_deps()
         assert deps.arm_mcp is not None
         assert "gripper" in deps.tool_mcps
         assert deps.executor is not None
@@ -103,18 +103,18 @@ class TestScenarioAgentDeps:
 class TestOrchestratorDeps:
     def test_config_deps_defaults_none(self):
         cfg = _make_cfg()
-        scenario_deps = _make_scenario_deps()
-        od = OrchestratorDeps(scenario_deps=scenario_deps, cfg=cfg)
+        scenario_deps = _make_robotic_deps()
+        od = OrchestratorDeps(robotic_deps=scenario_deps, cfg=cfg)
         assert od.config_deps is None
 
     def test_config_deps_can_be_set(self):
         cfg = _make_cfg()
-        scenario_deps = _make_scenario_deps()
+        scenario_deps = _make_robotic_deps()
         arm = _make_mock_mcp()
         rag = RAGPipeline()
         config_deps = ConfigAgentDeps(arm_mcp=arm, rag_pipeline=rag,
                                       scenarios_store_path="./store", cfg=cfg)
-        od = OrchestratorDeps(scenario_deps=scenario_deps, cfg=cfg, config_deps=config_deps)
+        od = OrchestratorDeps(robotic_deps=scenario_deps, cfg=cfg, config_deps=config_deps)
         assert od.config_deps is not None
 
 
@@ -138,16 +138,17 @@ class TestRAGPipelineStub:
 # Scenario Agent tool functions (called directly, no LLM)
 # ---------------------------------------------------------------------------
 
-class TestScenarioAgentTools:
+class TestRoboticAgentTools:
     def _agent_and_deps(self, arm_responses=None, store_path="./cobot/scenarios/store"):
         cfg = _make_cfg(store_path)
-        agent = build_scenario_agent(cfg)
-        deps = _make_scenario_deps(arm_responses=arm_responses, store_path=store_path)
+        agent = build_robotic_agent(cfg)
+        deps = _make_robotic_deps(arm_responses=arm_responses, store_path=store_path)
         return agent, deps
 
-    async def test_get_robot_status(self):
+
+    async def test_get_arm_status(self):
         agent, deps = self._agent_and_deps(arm_responses={"get_robot_status": {"ok": True, "state": "idle"}})
-        fn = _get_tool(agent, "get_robot_status")
+        fn = _get_tool(agent, "get_arm_status")
         ctx = MagicMock()
         ctx.deps = deps
         result = await fn(ctx)
@@ -187,7 +188,7 @@ class TestScenarioAgentTools:
     async def test_list_tool_mcps_no_tools(self):
         agent, deps = self._agent_and_deps()
         # Override tool_mcps to empty
-        deps = ScenarioAgentDeps(deps.arm_mcp, {}, deps.executor, deps.perception, deps.cfg)
+        deps = RoboticAgentDeps(deps.arm_mcp, {}, deps.executor, deps.perception, deps.cfg)
         fn = _get_tool(agent, "list_tool_mcps")
         ctx = MagicMock()
         ctx.deps = deps
@@ -197,7 +198,7 @@ class TestScenarioAgentTools:
     async def test_list_tool_mcps_returns_action_names(self):
         from mcp.types import Tool as MCPTool
         cfg = _make_cfg()
-        agent = build_scenario_agent(cfg)
+        agent = build_robotic_agent(cfg)
         arm = _make_mock_mcp()
 
         gripper_mcp = MagicMock()
@@ -216,7 +217,7 @@ class TestScenarioAgentTools:
 
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {"gripper": gripper_mcp, "vacuum": vacuum_mcp}, perception)
-        deps = ScenarioAgentDeps(arm, {"gripper": gripper_mcp, "vacuum": vacuum_mcp}, executor, perception, cfg)
+        deps = RoboticAgentDeps(arm, {"gripper": gripper_mcp, "vacuum": vacuum_mcp}, executor, perception, cfg)
         fn = _get_tool(agent, "list_tool_mcps")
         ctx = MagicMock()
         ctx.deps = deps
@@ -241,13 +242,13 @@ class TestScenarioAgentTools:
             return {"ok": True, "applied_speed": 30}
 
         cfg = _make_cfg()
-        agent = build_scenario_agent(cfg)
+        agent = build_robotic_agent(cfg)
         arm = _make_mock_mcp()
         gripper = MagicMock()
         gripper.call_tool = gripper_call
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {"gripper": gripper}, perception)
-        deps = ScenarioAgentDeps(arm, {"gripper": gripper}, executor, perception, cfg)
+        deps = RoboticAgentDeps(arm, {"gripper": gripper}, executor, perception, cfg)
         fn = _get_tool(agent, "call_tool_action")
         ctx = MagicMock()
         ctx.deps = deps
@@ -264,13 +265,13 @@ class TestScenarioAgentTools:
             return {"ok": True, "suction_kpa": 60}
 
         cfg = _make_cfg()
-        agent = build_scenario_agent(cfg)
+        agent = build_robotic_agent(cfg)
         arm = _make_mock_mcp()
         vacuum = MagicMock()
         vacuum.call_tool = vacuum_call
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {"vacuum": vacuum}, perception)
-        deps = ScenarioAgentDeps(arm, {"vacuum": vacuum}, executor, perception, cfg)
+        deps = RoboticAgentDeps(arm, {"vacuum": vacuum}, executor, perception, cfg)
         fn = _get_tool(agent, "call_tool_action")
         ctx = MagicMock()
         ctx.deps = deps
@@ -287,13 +288,13 @@ class TestScenarioAgentTools:
             return {"ok": True}
 
         cfg = _make_cfg()
-        agent = build_scenario_agent(cfg)
+        agent = build_robotic_agent(cfg)
         arm = _make_mock_mcp()
         gripper = MagicMock()
         gripper.call_tool = gripper_call
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {"gripper": gripper}, perception)
-        deps = ScenarioAgentDeps(arm, {"gripper": gripper}, executor, perception, cfg)
+        deps = RoboticAgentDeps(arm, {"gripper": gripper}, executor, perception, cfg)
         fn = _get_tool(agent, "call_tool_action")
         ctx = MagicMock()
         ctx.deps = deps
@@ -308,12 +309,12 @@ class TestScenarioAgentTools:
             return {"ok": True}
 
         cfg = _make_cfg()
-        agent = build_scenario_agent(cfg)
+        agent = build_robotic_agent(cfg)
         arm = MagicMock()
         arm.call_tool = arm_call
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {}, perception)
-        deps = ScenarioAgentDeps(arm, {}, executor, perception, cfg)
+        deps = RoboticAgentDeps(arm, {}, executor, perception, cfg)
         fn = _get_tool(agent, "move_to_pose")
         ctx = MagicMock()
         ctx.deps = deps
@@ -360,22 +361,19 @@ class TestOrchestratorTools:
     async def test_run_config_task_returns_unavailable_when_no_config_deps(self):
         cfg = _make_cfg()
         agent = build_orchestrator(cfg)
-        scenario_deps = _make_scenario_deps()
-        od = OrchestratorDeps(scenario_deps=scenario_deps, cfg=cfg, config_deps=None)
+        scenario_deps = _make_robotic_deps()
+        od = OrchestratorDeps(robotic_deps=scenario_deps, cfg=cfg, config_deps=None)
         fn = _get_tool(agent, "run_config_task")
         ctx = MagicMock()
         ctx.deps = od
         result = await fn(ctx, task_description="what is freedrive?")
         assert "not yet available" in result
 
-    async def test_get_robot_status_delegates_to_arm(self):
+    async def test_run_robotic_task_tool_exists(self):
+        """run_robotic_task is the sole robot-facing tool on the orchestrator."""
         cfg = _make_cfg()
         agent = build_orchestrator(cfg)
-        arm_responses = {"get_robot_status": {"ok": True, "joints": []}}
-        scenario_deps = _make_scenario_deps(arm_responses=arm_responses)
-        od = OrchestratorDeps(scenario_deps=scenario_deps, cfg=cfg)
-        fn = _get_tool(agent, "get_robot_status")
-        ctx = MagicMock()
-        ctx.deps = od
-        result = await fn(ctx)
-        assert result["ok"] is True
+        tools = list(agent._function_toolset.tools)
+        assert "run_robotic_task" in tools
+        assert "get_robot_status" not in tools
+        assert "get_tool_mcp_status" not in tools

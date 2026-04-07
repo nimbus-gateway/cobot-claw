@@ -342,28 +342,30 @@ class UR3eMCPNode(Node):
         status: dict[str, Any] = {}
 
         if HAVE_UR_DASHBOARD_MSGS:
-            # Robot mode
+            # Robot mode — .robot_mode is a ROS2 msg object; extract .val (int)
             rm = self._call_simple_service(self.robot_mode_client, GetRobotMode.Request())
             if rm["ok"]:
                 resp = rm["response"]
-                status["robot_mode"] = getattr(resp, "robot_mode", None)
+                raw_mode = getattr(resp, "robot_mode", None)
+                status["robot_mode"] = int(getattr(raw_mode, "val", raw_mode)) if raw_mode is not None else None
                 status["robot_mode_label"] = getattr(resp, "answer", None)
 
             sm = self._call_simple_service(self.safety_mode_client, GetSafetyMode.Request())
             if sm["ok"]:
                 resp = sm["response"]
-                status["safety_mode"] = getattr(resp, "safety_mode", None)
+                raw_safety = getattr(resp, "safety_mode", None)
+                status["safety_mode"] = int(getattr(raw_safety, "val", raw_safety)) if raw_safety is not None else None
                 status["safety_mode_label"] = getattr(resp, "answer", None)
 
             pr = self._call_simple_service(self.program_running_client, IsProgramRunning.Request())
             if pr["ok"]:
                 resp = pr["response"]
-                status["program_running"] = getattr(resp, "program_running", None)
+                status["program_running"] = bool(getattr(resp, "program_running", None))
 
             rc = self._call_simple_service(self.remote_control_client, IsInRemoteControl.Request())
             if rc["ok"]:
                 resp = rc["response"]
-                status["in_remote_control"] = getattr(resp, "in_remote_control", None)
+                status["in_remote_control"] = bool(getattr(resp, "in_remote_control", None))
 
         return status
 

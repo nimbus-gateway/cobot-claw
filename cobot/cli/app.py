@@ -65,7 +65,7 @@ async def _connect_session(session: CobotSession) -> None:
     from cobot.mcp.client import MCPClient
     from cobot.mcp.perception_contract import PerceptionClient
     from cobot.scenarios.executor import ScenarioExecutor
-    from cobot.agents.deps import ScenarioAgentDeps
+    from cobot.agents.deps import RoboticAgentDeps
     from cobot.agents.orchestrator import OrchestratorDeps
 
     robot = session.active_robot
@@ -110,7 +110,7 @@ async def _connect_session(session: CobotSession) -> None:
     )
 
     session.deps = OrchestratorDeps(
-        scenario_deps=ScenarioAgentDeps(arm, tool_mcps, executor, perception, session.cfg),  # type: ignore[arg-type]
+        robotic_deps=RoboticAgentDeps(arm, tool_mcps, executor, perception, session.cfg),  # type: ignore[arg-type]
         cfg=session.cfg,
         config_deps=config_deps,
     )

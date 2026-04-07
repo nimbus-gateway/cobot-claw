@@ -24,8 +24,8 @@ cobot-claw lets you command UR robot arms and end-effector tools (grippers, vacu
 
 Under the hood, cobot-claw is a **multi-agent AI system**. Think of it as a small team of specialists, each responsible for a different part of the job:
 
-- **Orchestrator** — the manager. Reads your request and decides which specialist to hand it to.
-- **Scenario Agent** — the operator. Translates your instruction into precise robot movements and tool actions, then executes them step by step.
+- **Orchestrator** — the manager. Reads your request and decides which specialist to hand it to. Never calls robot hardware directly.
+- **Robotic Agent** — the operator. Handles all robot interactions — status queries, movements, tool control, and scenario execution. Discovers attached tools dynamically so no code changes are needed when hardware changes.
 - **Safety Monitor** — the supervisor. Watches the robot continuously and intervenes if anything looks dangerous.
 - **Config Agent** — the technician. Answers questions from robot manuals and handles setup tasks *(coming in Phase 6)*.
 
@@ -188,8 +188,8 @@ cobot-claw/
 │   │   └── store/
 │   │       └── pick_place.yaml       # Example pick-and-place scenario
 │   ├── agents/
-│   │   ├── deps.py                   # ScenarioAgentDeps, ConfigAgentDeps
-│   │   ├── scenario.py               # Scenario Agent (dynamic tool discovery)
+│   │   ├── deps.py                   # RoboticAgentDeps, ConfigAgentDeps
+│   │   ├── robotic_agent.py          # Robotic Agent (dynamic tool discovery)
 │   │   ├── config_agent.py           # Config Agent (RAG + teach mode)
 │   │   └── orchestrator.py           # Orchestrator Agent + OrchestratorDeps
 │   ├── cli/
@@ -242,7 +242,7 @@ ROBOT_IP=192.168.1.2 python tools/gripper/server.py
 
 Key tools: `activate`, `open`, `close`, `move`, `stop`, `get_status`, `set_speed`, `set_force`
 
-The Scenario Agent discovers these actions automatically via `list_tool_mcps` — replace or add any end-effector MCP without touching agent code.
+The Robotic Agent discovers these actions automatically via `list_tool_mcps` — replace or add any end-effector MCP without touching agent code.
 
 ---
 
@@ -356,7 +356,7 @@ pytest -v
 | 1 | Config schema, LLM client, logging | **Done** |
 | 2 | MCP client wrapper, perception contract stub | **Done** |
 | 3 | Scenario schema, executor, example YAML, RAG stub | **Done** |
-| 4 | Scenario Agent + Config Agent + Orchestrator Agent | **Done** |
+| 4 | Robotic Agent + Config Agent + Orchestrator Agent | **Done** |
 | 5 | CLI — REPL, slash commands, streaming output | **Done** |
 | 6 | Config Agent RAG + `/teach` (real ChromaDB/LlamaIndex) | **Done** |
 | 7 | Safety Monitor | Future |

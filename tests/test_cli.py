@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from cobot.agents.deps import ScenarioAgentDeps
+from cobot.agents.deps import RoboticAgentDeps
 from cobot.agents.orchestrator import OrchestratorDeps
 from cobot.cli.commands.scenario import cmd_run, cmd_scenarios
 from cobot.cli.commands.status import cmd_status
@@ -68,8 +68,8 @@ def _make_session(store_path: str = "./cobot/scenarios/store",
         arm = _make_mock_mcp(arm_responses)
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {}, perception)
-        scenario_deps = ScenarioAgentDeps(arm, {}, executor, perception, cfg)
-        session.deps = OrchestratorDeps(scenario_deps=scenario_deps, cfg=cfg)
+        scenario_deps = RoboticAgentDeps(arm, {}, executor, perception, cfg)
+        session.deps = OrchestratorDeps(robotic_deps=scenario_deps, cfg=cfg)
         session.mcp_status["arm"] = True
     return session
 
@@ -163,9 +163,9 @@ class TestCmdStatus:
         arm.call_tool = call_tool
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {}, perception)
-        scenario_deps = ScenarioAgentDeps(arm, {}, executor, perception, cfg)
+        scenario_deps = RoboticAgentDeps(arm, {}, executor, perception, cfg)
         session = CobotSession(cfg=cfg, active_robot=cfg.default_robot)
-        session.deps = OrchestratorDeps(scenario_deps=scenario_deps, cfg=cfg)
+        session.deps = OrchestratorDeps(robotic_deps=scenario_deps, cfg=cfg)
 
         await cmd_status(session)
         assert "get_robot_status" in calls
@@ -200,9 +200,9 @@ class TestCmdRun:
         cfg = _make_cfg(str(tmp_path))
         perception = PerceptionClient()
         executor = ScenarioExecutor(arm, {}, perception)
-        scenario_deps = ScenarioAgentDeps(arm, {}, executor, perception, cfg)
+        scenario_deps = RoboticAgentDeps(arm, {}, executor, perception, cfg)
         session = CobotSession(cfg=cfg, active_robot=cfg.default_robot)
-        session.deps = OrchestratorDeps(scenario_deps=scenario_deps, cfg=cfg)
+        session.deps = OrchestratorDeps(robotic_deps=scenario_deps, cfg=cfg)
         # Should print failure without raising
         await cmd_run(session, "fail_scenario")
 

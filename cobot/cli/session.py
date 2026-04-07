@@ -29,3 +29,8 @@ class CobotSession:
     def robot_connected(self) -> bool:
         """True if at least the arm MCP connected successfully."""
         return self.mcp_status.get("arm", False)
+
+    # Backward-compat: some internal code still uses .scenario_deps
+    @property
+    def scenario_deps(self):
+        return self.deps.robotic_deps if self.deps else None

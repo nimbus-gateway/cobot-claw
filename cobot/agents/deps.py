@@ -9,12 +9,16 @@ from cobot.scenarios.executor import ScenarioExecutor
 
 
 @dataclass
-class ScenarioAgentDeps:
+class RoboticAgentDeps:
     arm_mcp: MCPClient
     tool_mcps: dict[str, MCPClient]
     executor: ScenarioExecutor
     perception: PerceptionClient
     cfg: CobotConfig
+
+
+# Backward-compat alias
+ScenarioAgentDeps = RoboticAgentDeps
 
 
 @dataclass
