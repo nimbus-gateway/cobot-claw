@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.align import Align
-from rich.columns import Columns
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
@@ -24,15 +23,13 @@ console = Console()
 # Welcome screen
 # ---------------------------------------------------------------------------
 
-_ROBOT_ART = """\
-  ╔════╗
-  ║ ██ ║
-╔═╩════╩═╗
-║        ║
-║        ║
-╚══╦══╦══╝
-   ║  ║
-  ═╩══╩═"""
+_LOGO = """\
+ ██████╗ ██████╗ ██████╗  ██████╗ ████████╗     ██████╗██╗      █████╗ ██╗    ██╗
+██╔════╝██╔═══██╗██╔══██╗██╔═══██╗╚══██╔══╝    ██╔════╝██║     ██╔══██╗██║    ██║
+██║     ██║   ██║██████╔╝██║   ██║   ██║       ██║     ██║     ███████║██║ █╗ ██║
+██║     ██║   ██║██╔══██╗██║   ██║   ██║       ██║     ██║     ██╔══██║██║███╗██║
+╚██████╗╚██████╔╝██████╔╝╚██████╔╝   ██║       ╚██████╗███████╗██║  ██║╚███╔███╔╝
+ ╚═════╝ ╚═════╝ ╚═════╝  ╚═════╝   ╚═╝        ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ """
 
 _PROVIDER_ICONS = {
     "anthropic": ("🟣", "Anthropic"),
@@ -53,16 +50,13 @@ def print_welcome(
     provider = cfg.llm.provider.lower()
     provider_icon, provider_label = _PROVIDER_ICONS.get(provider, ("⚪", provider))
 
+    # ── Logo header (full width, centered) ───────────────────────────────────
+    console.print()
+    console.print(Align(Text(_LOGO, style="bold cyan", justify="center"), align="center"))
+    console.print()
+
     # ── Left panel ───────────────────────────────────────────────────────────
-    # Title
-    title = Text(justify="center")
-    title.append("cobot-claw", style="bold cyan")
-    title.append("  v0.1", style="dim")
-
-    # Robot art — centered
-    art = Align(Text(_ROBOT_ART, style="cyan"), align="center")
-
-    # Robot info table (centered via table column alignment)
+    # Robot info table
     info = Table(show_header=False, box=None, padding=(0, 1), show_edge=False)
     info.add_column(justify="right", style="dim")
     info.add_column(justify="left")
@@ -83,7 +77,7 @@ def print_welcome(
             return Text("✓", style="green")
         if state is False:
             return Text("✗", style="red")
-        return Text("?", style="dim")   # not yet attempted
+        return Text("?", style="dim")
 
     mcp = Table(show_header=False, box=None, padding=(0, 1), show_edge=False)
     mcp.add_column(justify="right", style="dim")
@@ -93,7 +87,7 @@ def print_welcome(
     if robot.gripper_mcp_url:
         mcp.add_row("gripper", robot.gripper_mcp_url, _mcp_icon("gripper"))
 
-    # Provider / model status
+    # Provider / model
     llm_info = Table(show_header=False, box=None, padding=(0, 1), show_edge=False)
     llm_info.add_column(justify="right", style="dim")
     llm_info.add_column(justify="left", style="dim")
@@ -104,12 +98,6 @@ def print_welcome(
 
     left = Panel(
         Group(
-            Text(""),
-            title,
-            Text(""),
-            art,
-            Text(""),
-            Rule(style="dim"),
             Text(""),
             Align(info, align="center"),
             Text(""),
@@ -180,13 +168,35 @@ def print_welcome(
         border_style="dim",
     )
 
-    console.print(Columns([left, right], expand=True))
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=1)
+    grid.add_column(ratio=2)
+    grid.add_row(left, right)
+    console.print(grid)
     console.print()
 
 
 # ---------------------------------------------------------------------------
 # Tool call / result display
 # ---------------------------------------------------------------------------
+
+def print_reasoning(text: str, max_chars: int = 400) -> None:
+    """Display model reasoning / thinking text in a muted style."""
+    truncated = text[:max_chars] + ("…" if len(text) > max_chars else "")
+    # Wrap in a subtle left-border panel
+    from rich.padding import Padding
+    console.print(
+        Padding(
+            Panel(
+                Text(truncated, style="dim italic"),
+                border_style="dim cyan",
+                padding=(0, 1),
+                expand=False,
+            ),
+            (0, 0, 0, 2),
+        )
+    )
+
 
 def print_tool_call(tool_name: str, args: dict) -> None:
     args_str = ", ".join(f"{k}={repr(v)}" for k, v in args.items())

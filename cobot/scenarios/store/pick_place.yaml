@@ -1,56 +1,136 @@
 name: pick-place-box
-description: Pick a box from station A and place it at station B
+description: >
+  Pick from station A and place at station B — mirrors the working UR program.
+  Waypoint joint values (radians) must be filled in from the teach pendant
+  before running. Use /teach or read values from Installation > Waypoints.
 robot: ur3e
 
 steps:
+  # --- Go to home position first ---
   - type: move_named_pose
     pose: home
+    speed: 0.5
+
+  # --- Initialise gripper ---
+  - type: tool_action
+    tool: gripper
+    action: activate
+    params: {}
+    arm_recovery_sec: 3.0
+
+  - type: tool_action
+    tool: gripper
+    action: open
+    params: {speed: 100, force: 100}
+    arm_recovery_sec: 3.0
+
+  - type: tool_action
+    tool: gripper
+    action: activate
+    params: {}
+    arm_recovery_sec: 3.0
+
+  # --- Move to approach position (Waypoint_10) ---
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_10
+    speed: 0.5
+
+  - type: wait
     duration_sec: 5.0
 
-  - type: move_tcp_pose
-    x: 0.30
-    y: 0.10
-    z: 0.20
-    speed: 0.05
-    perception:
-      locate: "red_box"
-    fallback_position:
-      x: 0.30
-      y: 0.10
-      z: 0.20
+  # --- Descend to pre-pick (Waypoint_12 → Waypoint_1) ---
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_12
+    speed: 0.3
 
-  - type: move_tcp_pose
-    x: 0.30
-    y: 0.10
-    z: 0.12
-    speed: 0.02
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_1
+    speed: 0.2
+
+  - type: wait
+    duration_sec: 3.0
 
   - type: tool_action
     tool: gripper
-    action: close         # Robotiq: close(speed, force) — 0..100
-    params:
-      speed: 50
-      force: 60
-    arm_recovery_sec: 6.0  # wait for UR External Control to restore after gripper script
+    action: close
+    params: {speed: 50, force: 60}
+    arm_recovery_sec: 6.0
 
-  - type: check_motion_complete
-    timeout_sec: 8.0
+  # --- Lift and transfer (Waypoint_2 → 3 → 4) ---
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_2
+    speed: 0.3
 
-  - type: move_named_pose
-    pose: retract
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_3
+    speed: 0.5
 
-  - type: move_tcp_pose
-    x: -0.20
-    y: 0.30
-    z: 0.15
-    speed: 0.05
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_4
+    speed: 0.3
+
+  - type: wait
+    duration_sec: 2.0
 
   - type: tool_action
     tool: gripper
-    action: open          # Robotiq: open(speed, force)
-    params:
-      speed: 50
-    arm_recovery_sec: 5.0  # wait for UR External Control to restore after gripper script
+    action: open
+    params: {speed: 50, force: 100}
+    arm_recovery_sec: 5.0
 
-  - type: move_named_pose
-    pose: home
+  # --- Transit to station B (Waypoint_5 → 9 → 13 → 6) ---
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_5
+    speed: 0.5
+
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_9
+    speed: 0.5
+
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_13
+    speed: 0.5
+
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_6
+    speed: 0.2
+
+  - type: wait
+    duration_sec: 3.0
+
+  - type: tool_action
+    tool: gripper
+    action: close
+    params: {speed: 50, force: 60}
+    arm_recovery_sec: 6.0
+
+  # --- Place sequence (Waypoint_11 → 7 → 14 → 8) ---
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_11
+    speed: 0.3
+
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_7
+    speed: 0.5
+
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_14
+    speed: 0.3
+
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_8
+    speed: 0.2
+
+  - type: tool_action
+    tool: gripper
+    action: open
+    params: {speed: 100, force: 100}
+    arm_recovery_sec: 5.0
+
+  # --- Return to approach (Waypoint_10) ---
+  - type: move_joints
+    joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # TODO: Waypoint_10
+    speed: 0.5
+
+  - type: wait
+    duration_sec: 2.0

@@ -1,0 +1,188 @@
+name: pick-and-place-demo
+description: >
+  Pick from station A, drop at station B, pick from station B, place at station C.
+  All waypoints use _q joint values from pickPlaceTest3.script.
+  All approach/pick/place stops use blend_radius=0.0 to match the UR program's
+  breakAfter (full stop) behaviour. Transit blending only on safe mid-transit moves.
+robot: ur3e
+
+steps:
+  # --- Go to home position first ---
+  - type: move_named_pose
+    pose: home
+    speed: 0.8
+    accel: 1.0
+
+  # --- Initialise gripper ---
+  - type: tool_action
+    tool: gripper
+    action: activate
+    params: {}
+    arm_recovery_sec: 3.0
+
+  - type: tool_action
+    tool: gripper
+    action: open
+    params: {speed: 247, force: 255}
+    arm_recovery_sec: 3.0
+
+  - type: tool_action
+    tool: gripper
+    action: activate
+    params: {}
+    arm_recovery_sec: 3.0
+
+  # --- Main pick-and-place loop ---
+  - type: repeat
+    count: 3
+    steps:
+
+      # ================================================================
+      # PICK from station A  (Waypoint_10 → 12 → 1)
+      # ================================================================
+
+      # Waypoint_10 — safe approach height, full stop then wait
+      - type: move_joints
+        joints: [-3.1574743, -0.6909905, -1.4111242, -1.9901678, 1.6334889, 3.1727850]
+        speed: 0.8
+        accel: 1.0
+        blend_radius: 0.0
+
+      - type: wait
+        duration_sec: 5.0
+
+      # Waypoint_12 — intermediate descent, full stop (matches UR breakAfter)
+      - type: move_joints
+        joints: [-1.4236143, -2.5229918, -0.0436534, -2.1384636, 1.5833623, 3.3350034]
+        speed: 0.5
+        accel: 0.8
+        blend_radius: 0.0
+
+      # Waypoint_1 — final pick position, full stop, slow approach
+      - type: move_joints
+        joints: [-1.3915413, -2.7172157, -0.2647029, -1.7960412, 1.5204642, 3.3352261]
+        speed: 0.3
+        accel: 0.6
+        blend_radius: 0.0
+
+      - type: wait
+        duration_sec: 3.0
+
+      # --- Grip object ---
+      - type: tool_action
+        tool: gripper
+        action: close
+        params: {speed: 247, force: 255}
+        arm_recovery_sec: 6.0
+
+      # ================================================================
+      # LIFT and TRANSIT to drop point  (Waypoint_2 → 10 → 4)
+      # Via Waypoint_10 (known-safe height) to avoid conveyor collision
+      # ================================================================
+
+      # Waypoint_2 — lift, full stop before any base rotation
+      - type: move_joints
+        joints: [-1.3288253, -1.6756035, -1.3417897, -1.6875893, 1.5709724, 3.3520868]
+        speed: 0.4
+        accel: 0.6
+        blend_radius: 0.0
+
+      # Transit via approach-high → over drop point — blended for smooth swing
+      - type: move_path
+        waypoints:
+          - joints: [-3.1574743, -0.6909905, -1.4111242, -1.9901678, 1.6334889, 3.1727850]
+            speed: 0.7
+            accel: 0.9
+            blend_radius: 0.04   # blend through safe height into final position
+          - joints: [-3.0929382, -3.0833613, -0.0030837, -1.4862607, 1.5430660, 3.3184550]
+            speed: 0.5
+            accel: 0.8
+            blend_radius: 0.0    # full stop over drop point (Waypoint_4)
+
+      - type: wait
+        duration_sec: 2.0
+
+      # --- Release object at drop point ---
+      - type: tool_action
+        tool: gripper
+        action: open
+        params: {speed: 247, force: 255}
+        arm_recovery_sec: 5.0
+
+      # ================================================================
+      # TRANSIT to station B pick  (Waypoint_5 → 9 → 13)
+      # ================================================================
+      - type: move_path
+        waypoints:
+          - joints: [-3.0854755, -1.3411405, -1.5715034, -1.6907174, 1.6404226, 3.2574825]
+            speed: 0.8
+            accel: 1.0
+            blend_radius: 0.02
+          - joints: [-1.4857948, -1.4797614, -1.5712335, -1.5709788, 1.5627706, 3.2435365]
+            speed: 0.8
+            accel: 1.0
+            blend_radius: 0.0    # full stop at Waypoint_9
+
+      # Waypoint_13 — final pick position at station B, full stop
+      - type: move_joints
+        joints: [-1.7385324, -2.2475974, -0.8299187, -1.6147095, 1.5323267, 2.9951982]
+        speed: 0.3
+        accel: 0.6
+        blend_radius: 0.0
+
+      - type: wait
+        duration_sec: 3.0
+
+      # --- Grip second object ---
+      - type: tool_action
+        tool: gripper
+        action: close
+        params: {speed: 247, force: 255}
+        arm_recovery_sec: 6.0
+
+      # ================================================================
+      # PLACE sequence  (Waypoint_11 → 7 → 14 → 8)
+      # ================================================================
+
+      # Waypoint_11 — lift from station B, full stop
+      - type: move_joints
+        joints: [-1.6494549, -1.6431867, -0.9340310, -2.1352331, 1.5001402, 3.0877874]
+        speed: 0.5
+        accel: 0.8
+        blend_radius: 0.0
+
+      # Waypoint_7 → 14 — transit and descent, blended mid-transit only
+      - type: move_path
+        waypoints:
+          - joints: [-3.1472672, -1.4475904, -1.5437824, -1.6821324, 1.5180322, 3.0877070]
+            speed: 0.8
+            accel: 1.0
+            blend_radius: 0.02   # blend through Waypoint_7
+          - joints: [-3.1478913, -1.5609931, -2.1177466, -0.9947806, 1.5180595, 3.0882659]
+            speed: 0.5
+            accel: 0.8
+            blend_radius: 0.0    # full stop at Waypoint_14 before final descent
+
+      # Waypoint_8 — final place position, full stop, slow
+      - type: move_joints
+        joints: [-3.1479550, -1.5949046, -2.1554430, -0.9232155, 1.5180084, 3.0883293]
+        speed: 0.3
+        accel: 0.6
+        blend_radius: 0.0
+
+      # --- Release at place position ---
+      - type: tool_action
+        tool: gripper
+        action: open
+        params: {speed: 247, force: 255}
+        arm_recovery_sec: 5.0
+
+      # --- Return to approach (Waypoint_10) ---
+      - type: move_joints
+        joints: [-3.1574743, -0.6909905, -1.4111242, -1.9901678, 1.6334889, 3.1727850]
+        speed: 0.8
+        accel: 1.0
+        blend_radius: 0.0
+
+      - type: wait
+        duration_sec: 2.0

@@ -36,9 +36,7 @@ from typing import Any
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
-from builtin_interfaces.msg import Duration
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
@@ -65,8 +63,6 @@ HEADLESS_MODE = os.getenv("HEADLESS_MODE", "true").lower() in {"1", "true", "yes
 BASE_FRAME = os.getenv("BASE_FRAME", "base")
 TCP_FRAME = os.getenv("TCP_FRAME", "tool0")
 
-DEFAULT_MOVE_DURATION = float(os.getenv("DEFAULT_MOVE_DURATION", "5.0"))
-
 JOINTS = [
     "shoulder_pan_joint",
     "shoulder_lift_joint",
@@ -90,7 +86,7 @@ WARN_MARGIN_RAD = 0.8
 BLOCK_MARGIN_RAD = 0.3
 
 POSES = {
-    "home":          [0.0,    -1.5708, 0.0,    -1.5708, 0.0,    0.0],
+    "home":          [-3.16018, -0.6864, -1.4132, -2.0002, 1.63811, 3.17233],
     "retract":       [0.0,    -2.5,    2.0,    -1.0,    0.0,    0.0],
     "reach_forward": [0.0,    -1.5708, 1.5708, -1.5708, 0.0,    0.0],
     "point_down":    [0.0,    -1.5708, 1.5708, -1.5708, 1.5708, 0.0],
@@ -179,13 +175,6 @@ class UR3eMCPNode(Node):
         self.current_joints: list[float] | None = None
         self.last_target_joints: list[float] | None = None
         self.last_command_time: float | None = None
-        self.last_command_duration: float | None = None
-
-        self.trajectory_pub = self.create_publisher(
-            JointTrajectory,
-            "/scaled_joint_trajectory_controller/joint_trajectory",
-            10,
-        )
 
         self.create_subscription(
             JointState,
@@ -231,33 +220,11 @@ class UR3eMCPNode(Node):
         with self._lock:
             return list(self.current_joints) if self.current_joints is not None else None
 
-    def send_joint_trajectory(self, joints: list[float], duration_sec: float) -> None:
-        traj = JointTrajectory()
-        traj.joint_names = JOINTS
-
-        pt = JointTrajectoryPoint()
-        pt.positions = [float(x) for x in joints]
-        pt.velocities = [0.0] * 6
-        pt.accelerations = [0.0] * 6
-
-        sec = int(duration_sec)
-        nanosec = int((duration_sec - sec) * 1e9)
-        pt.time_from_start = Duration(sec=sec, nanosec=nanosec)
-
-        traj.points = [pt]
-        self.trajectory_pub.publish(traj)
-
-        with self._lock:
-            self.last_target_joints = list(joints)
-            self.last_command_time = time.time()
-            self.last_command_duration = duration_sec
-
     def is_motion_complete(self, tolerance_rad: float = 0.03) -> dict[str, Any]:
         with self._lock:
             current = list(self.current_joints) if self.current_joints is not None else None
             target = list(self.last_target_joints) if self.last_target_joints is not None else None
             t0 = self.last_command_time
-            duration = self.last_command_duration
 
         if current is None:
             return {"ok": False, "reason": "no_joint_state"}
@@ -266,14 +233,12 @@ class UR3eMCPNode(Node):
 
         diffs = [abs(c - t) for c, t in zip(current, target)]
         max_error = max(diffs)
-
-        elapsed = None if t0 is None else time.time() - t0
-        nominal_done = (elapsed is not None and duration is not None and elapsed >= duration)
+        elapsed = None if t0 is None else round(time.time() - t0, 2)
 
         return {
             "ok": True,
             "complete": max_error <= tolerance_rad,
-            "nominal_time_elapsed": nominal_done,
+            "elapsed_sec": elapsed,
             "max_error_rad": round(max_error, 5),
             "joint_errors_rad": [round(d, 5) for d in diffs],
             "target_joints": [round(x, 5) for x in target],
@@ -546,17 +511,29 @@ def is_motion_complete(tolerance_rad: float = 0.03) -> dict[str, Any]:
 
 @mcp.tool()
 @safe_tool
-def move_joints(joints: list[float], duration_sec: float = DEFAULT_MOVE_DURATION) -> dict[str, Any]:
+def move_joints(
+    joints: list[float],
+    speed: float = 1.05,
+    accel: float = 1.4,
+    blend_radius: float = 0.0,
+) -> dict[str, Any]:
     """
-    Move directly in joint space.
-    This does not force via-home or midpoint logic.
-    """
-    r = require_robot()
+    Move directly in joint space using URScript movej() sent to port 30002.
 
+    Sends the command directly to the robot's internal trajectory planner —
+    does NOT use the ROS JointTrajectory controller, which conflicts with
+    ExternalControl's servo stream and causes velocity-limit faults.
+
+    joints       – 6 joint angles in radians [base, shoulder, elbow, w1, w2, w3]
+    speed        – joint speed rad/s  (default 1.05, UR default is 1.05)
+    accel        – joint accel rad/s² (default 1.4,  UR default is 1.4)
+    blend_radius – blend radius in metres (default 0.0 = stop at waypoint).
+                   Use >0 for transit waypoints so the arm flows smoothly
+                   between consecutive moves without stopping.
+    """
     if len(joints) != 6:
         return {"ok": False, "message": "Exactly 6 joint values are required"}
 
-    # Validate target vector against configured limits
     target_check = check_joint_vector_limits(joints)
     if target_check["blocked"]:
         return {
@@ -565,65 +542,186 @@ def move_joints(joints: list[float], duration_sec: float = DEFAULT_MOVE_DURATION
             "issues": target_check["issues"],
         }
 
-    duration_sec = max(0.2, float(duration_sec))
-    r.send_joint_trajectory([float(x) for x in joints], duration_sec)
-
-    return {
-        "ok": True,
-        "message": "Joint trajectory sent",
-        "duration_sec": duration_sec,
-        "target_joints_rad": [round(float(x), 5) for x in joints],
-    }
+    j = [float(x) for x in joints]
+    try:
+        script = _send_movej(j, speed=speed, accel=accel, blend_radius=blend_radius)
+        return {
+            "ok": True,
+            "message": "movej command sent",
+            "target_joints_rad": [round(x, 5) for x in j],
+            "speed_rad_s": speed,
+            "accel_rad_s2": accel,
+            "blend_radius_m": blend_radius,
+            "script": script.strip(),
+        }
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
 
 
 @mcp.tool()
 @safe_tool
-def move_named_pose(name: str, duration_sec: float = DEFAULT_MOVE_DURATION, via_home: bool = False) -> dict[str, Any]:
+def move_path(
+    waypoints: list[dict[str, Any]],
+) -> dict[str, Any]:
     """
-    Move to a named pose. Optionally go via home first.
-    """
-    r = require_robot()
+    Execute a sequence of movej waypoints as a single URScript program.
 
+    This is the key to smooth motion — the UR controller sees all waypoints
+    at once and can blend between them using the blend radius (r parameter).
+    Individual move_joints calls cannot blend because each is a separate script.
+
+    waypoints – list of dicts, each with:
+      joints: list[float]  – 6 joint angles in radians
+      speed:  float        – rad/s (default 1.047)
+      accel:  float        – rad/s² (default 1.396)
+      blend_radius: float  – metres (default 0.0). Last waypoint must be 0.0.
+    """
+    import socket
+
+    if not waypoints:
+        return {"ok": False, "message": "No waypoints provided"}
+
+    # Validate all waypoints first
+    for i, wp in enumerate(waypoints):
+        joints = wp.get("joints", [])
+        if len(joints) != 6:
+            return {"ok": False, "message": f"Waypoint {i}: exactly 6 joint values required"}
+        check = check_joint_vector_limits(joints)
+        if check["blocked"]:
+            return {"ok": False, "message": f"Waypoint {i} exceeds limits", "issues": check["issues"]}
+
+    # Force last waypoint blend_radius to 0 (UR requires it)
+    waypoints[-1]["blend_radius"] = 0.0
+
+    # Build a single URScript program with all waypoints
+    lines = ["def move_path():"]
+    for wp in waypoints:
+        j = [float(x) for x in wp["joints"]]
+        speed = float(wp.get("speed", 1.047))
+        accel = float(wp.get("accel", 1.396))
+        blend = float(wp.get("blend_radius", 0.0))
+        r_part = f",r={blend:.4f}" if blend > 0 else ""
+        lines.append(
+            f"  movej([{j[0]:.6f},{j[1]:.6f},{j[2]:.6f},{j[3]:.6f},{j[4]:.6f},{j[5]:.6f}],"
+            f"a={accel:.3f},v={speed:.3f}{r_part})"
+        )
+    lines.append("end")
+    lines.append("")
+    script = "\n".join(lines)
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5.0)
+        sock.connect((ROBOT_IP, 30002))
+        sock.sendall(script.encode("utf-8"))
+        sock.close()
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+    # Track the final waypoint for is_motion_complete
+    last_j = [float(x) for x in waypoints[-1]["joints"]]
+    r = robot
+    if r is not None:
+        with r._lock:
+            r.last_target_joints = last_j
+            r.last_command_time = time.time()
+
+    return {
+        "ok": True,
+        "message": f"move_path sent ({len(waypoints)} waypoints)",
+        "waypoint_count": len(waypoints),
+        "script_lines": len(lines),
+    }
+
+
+def _send_movej(joints: list[float], speed: float = 1.05, accel: float = 1.4, blend_radius: float = 0.0) -> str:
+    """Internal helper: send URScript movej() to port 30002 and record target for is_motion_complete.
+
+    blend_radius – blend radius in metres. >0 lets the arm blend into the next
+    motion without decelerating to zero (smooth multi-waypoint paths).
+    Use 0.0 for final pick/place positions where the arm must stop precisely.
+    """
+    import socket
+    j = [float(x) for x in joints]
+    r_part = f",r={blend_radius:.4f}" if blend_radius > 0 else ""
+    script = (
+        f"movej([{j[0]:.6f},{j[1]:.6f},{j[2]:.6f},{j[3]:.6f},{j[4]:.6f},{j[5]:.6f}],"
+        f"a={accel:.3f},v={speed:.3f}{r_part})\n"
+    )
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5.0)
+    sock.connect((ROBOT_IP, 30002))
+    sock.sendall(script.encode("utf-8"))
+    sock.close()
+
+    # Update motion tracking so is_motion_complete() reflects the latest command
+    r = robot
+    if r is not None:
+        with r._lock:
+            r.last_target_joints = j
+            r.last_command_time = time.time()
+
+    return script
+
+
+@mcp.tool()
+@safe_tool
+def move_named_pose(
+    name: str,
+    speed: float = 1.05,
+    accel: float = 1.4,
+    via_home: bool = False,
+) -> dict[str, Any]:
+    """
+    Move to a named pose using URScript movej() via port 30002.
+    Optionally go via home first.
+    """
     if name not in POSES:
         return {"ok": False, "message": f"Unknown pose '{name}'", "available_poses": list(POSES.keys())}
 
     if via_home and name != "home":
-        r.send_joint_trajectory(POSES["home"], max(0.2, duration_sec))
-        # Poll for completion instead of a single blocking sleep.
-        # Cap at duration_sec + 2s to handle slower moves without hanging.
-        deadline = time.time() + duration_sec + 2.0
+        _send_movej(POSES["home"], speed=speed, accel=accel)
+        # Wait for home to complete before moving to target
+        deadline = time.time() + 15.0
+        r = require_robot()
         while time.time() < deadline:
-            time.sleep(0.1)
+            time.sleep(0.2)
             if r.is_motion_complete().get("complete"):
                 break
 
-    r.send_joint_trajectory(POSES[name], max(0.2, duration_sec))
+    script = _send_movej(POSES[name], speed=speed, accel=accel)
 
     return {
         "ok": True,
-        "message": "Named pose command sent",
+        "message": "movej command sent",
         "pose": name,
         "via_home": via_home,
-        "duration_sec": duration_sec,
         "target_joints_rad": [round(x, 5) for x in POSES[name]],
+        "speed_rad_s": speed,
+        "script": script.strip(),
     }
 
 
 @mcp.tool()
 @safe_tool
-def go_home(duration_sec: float = DEFAULT_MOVE_DURATION) -> dict[str, Any]:
+def go_home(speed: float = 1.05, accel: float = 1.4) -> dict[str, Any]:
     """
-    Convenience move to home. Not forced anywhere else.
+    Convenience move to home pose.
     """
-    return move_named_pose("home", duration_sec=duration_sec, via_home=False)
+    return move_named_pose("home", speed=speed, accel=accel, via_home=False)
 
 
 @mcp.tool()
 @safe_tool
-def unwind_joint(joint_index: int, target_rad: float = 0.0, duration_sec: float = DEFAULT_MOVE_DURATION) -> dict[str, Any]:
+def unwind_joint(
+    joint_index: int,
+    target_rad: float = 0.0,
+    speed: float = 0.5,
+    accel: float = 0.5,
+) -> dict[str, Any]:
     """
-    Move one joint only, keeping the others fixed.
-    Useful for recovery from winding.
+    Move one joint to target_rad, keeping the others fixed.
+    Useful for recovery from winding. Uses slow speed by default.
     """
     r = require_robot()
     current = r.get_current_joints()
@@ -644,22 +742,22 @@ def unwind_joint(joint_index: int, target_rad: float = 0.0, duration_sec: float 
             "issues": target_check["issues"],
         }
 
-    r.send_joint_trajectory(target, max(0.2, duration_sec))
+    _send_movej(target, speed=speed, accel=accel)
     return {
         "ok": True,
-        "message": "Single-joint unwind sent",
+        "message": "Single-joint unwind sent via movej",
         "joint": JOINTS[joint_index],
         "joint_index": joint_index,
         "target_rad": float(target_rad),
-        "duration_sec": duration_sec,
+        "speed_rad_s": speed,
     }
 
 
 @mcp.tool()
 @safe_tool
-def hold_position(duration_sec: float = 0.5) -> dict[str, Any]:
+def hold_position() -> dict[str, Any]:
     """
-    Command the robot to hold its current position by re-sending current joints.
+    Hold current position by sending a movej to the current joint angles.
     This is not an emergency stop.
     """
     r = require_robot()
@@ -667,11 +765,10 @@ def hold_position(duration_sec: float = 0.5) -> dict[str, Any]:
     if current is None:
         return {"ok": False, "message": "No joint state available"}
 
-    r.send_joint_trajectory(current, max(0.2, duration_sec))
+    _send_movej(current, speed=0.1, accel=0.1)
     return {
         "ok": True,
-        "message": "Hold-position command sent",
-        "duration_sec": duration_sec,
+        "message": "Hold-position movej sent",
         "current_joints_rad": [round(x, 5) for x in current],
     }
 

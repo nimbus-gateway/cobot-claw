@@ -103,12 +103,14 @@ def build_robotic_agent(cfg: CobotConfig) -> Agent:
     async def move_to_pose(
         ctx: RunContext[RoboticAgentDeps],
         pose_name: str,
-        duration_sec: float = 5.0,
+        speed: float = 1.05,
+        accel: float = 1.4,
     ) -> dict:
         """Move arm to a named pose (home, retract, reach_forward, etc.)."""
         return await ctx.deps.arm_mcp.call_tool("move_named_pose", {
             "name": pose_name,
-            "duration_sec": duration_sec,
+            "speed": speed,
+            "accel": accel,
         })
 
     @agent.tool

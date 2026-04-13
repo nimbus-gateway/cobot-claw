@@ -20,7 +20,7 @@ import structlog
 
 from cobot.scenarios.schema import (
     Scenario, ScenarioStep,
-    MoveJointsStep, MoveNamedPoseStep, MoveTCPStep,
+    MoveJointsStep, MoveNamedPoseStep, MoveTCPStep, MovePathStep,
     ToolActionStep, WaitStep, CheckMotionStep, RepeatStep,
 )
 from cobot.mcp.client import MCPClient
@@ -146,13 +146,29 @@ class ScenarioExecutor:
             case MoveJointsStep():
                 return await self.arm.call_tool("move_joints", {
                     "joints": step.joints,
-                    "duration_sec": step.duration_sec,
+                    "speed": step.speed,
+                    "accel": step.accel,
+                    "blend_radius": step.blend_radius,
+                })
+
+            case MovePathStep():
+                return await self.arm.call_tool("move_path", {
+                    "waypoints": [
+                        {
+                            "joints": wp.joints,
+                            "speed": wp.speed,
+                            "accel": wp.accel,
+                            "blend_radius": wp.blend_radius,
+                        }
+                        for wp in step.waypoints
+                    ],
                 })
 
             case MoveNamedPoseStep():
                 return await self.arm.call_tool("move_named_pose", {
                     "name": step.pose,
-                    "duration_sec": step.duration_sec,
+                    "speed": step.speed,
+                    "accel": step.accel,
                     "via_home": step.via_home,
                 })
 
@@ -210,20 +226,41 @@ class ScenarioExecutor:
         return {"x": step.x, "y": step.y, "z": step.z}
 
     async def _wait_for_arm_recovery(self, timeout_sec: float) -> None:
-        """Poll arm get_robot_status until ros_ready=True or timeout.
+        """Restore UR External Control after a gripper/tool action interrupts it.
 
-        Called after gripper tool actions that interrupt UR External Control.
-        The gripper MCP server restores External Control in a background thread;
-        this method waits until the arm confirms it is ready before the executor
-        proceeds to the next step.
+        Strategy:
+          1. Wait a short settling time for the tool script to finish.
+          2. Actively call recover_external_control (resend_robot_program in
+             headless mode, dashboard play otherwise).
+          3. Poll get_joint_states — a successful response confirms ROS and the
+             arm controller are alive (does not require get_robot_status, which
+             may be unavailable due to dashboard service issues).
+          4. Raise RuntimeError on timeout so the executor aborts the scenario
+             rather than sending a move command to an uncontrolled arm.
         """
-        deadline = time.time() + timeout_sec
+        SETTLE_SEC = 1.5   # give the tool script time to finish before recovery
+
+        await asyncio.sleep(SETTLE_SEC)
+
+        # Actively trigger External Control recovery
+        try:
+            await self.arm.call_tool("recover_external_control", {})
+        except Exception as e:
+            logger.warning("executor.recover_external_control_failed", error=str(e))
+
+        deadline = time.time() + max(0.0, timeout_sec - SETTLE_SEC)
         while time.time() < deadline:
             await asyncio.sleep(0.5)
             try:
-                status = await self.arm.call_tool("get_robot_status", {})
-                if status.get("ros_ready"):
-                    return
+                result = await self.arm.call_tool("get_joint_states", {})
+                if result.get("ok"):
+                    return   # arm controller is responding — safe to continue
             except Exception:
-                pass  # arm still recovering — keep polling
-        logger.warning("executor.arm_recovery_timeout", timeout_sec=timeout_sec)
+                pass  # still recovering — keep polling
+
+        # Timeout: do NOT continue — a move command now would cause a Protective Stop
+        raise RuntimeError(
+            f"Arm did not recover External Control within {timeout_sec}s. "
+            "Scenario aborted to prevent unsafe motion. "
+            "Check the teach pendant and use /reconnect to restore."
+        )

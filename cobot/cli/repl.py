@@ -12,6 +12,9 @@ Claude Code-style interface:
 from __future__ import annotations
 
 import asyncio
+import sys
+import threading
+import time as _time
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -26,6 +29,7 @@ from cobot.cli.renderer import (
     console,
     print_agent_response,
     print_error,
+    print_reasoning as _print_reasoning,
     print_tool_call,
     print_tool_result,
     print_welcome,
@@ -265,21 +269,50 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
 
     import json
 
-    try:
-        live = Live(
-            Spinner("dots", text="[dim]thinking…[/dim]"),
-            console=console,
-            refresh_per_second=10,
-            transient=True,
-        )
-        live.start()
+    live = Live(
+        Spinner("dots", text="[dim]thinking…[/dim]"),
+        console=console,
+        refresh_per_second=10,
+        transient=True,
+    )
+    live.start()
 
+    try:
         async with agent.iter(text, deps=deps, message_history=session.message_history or None) as run:
             async for node in run:
                 if hasattr(node, "model_response"):
-                    for part in node.model_response.parts:
-                        if hasattr(part, "args_as_dict"):
-                            # tool call → swap spinner to show tool name
+                    parts = node.model_response.parts
+                    has_tool_calls = any(hasattr(p, "args_as_dict") for p in parts)
+
+                    for part in parts:
+                        # Extended thinking block (Claude extended thinking)
+                        if hasattr(part, "thinking"):
+                            live.stop()
+                            _print_reasoning(str(part.thinking))
+                            live = Live(
+                                Spinner("dots", text="[dim]thinking…[/dim]"),
+                                console=console,
+                                refresh_per_second=10,
+                                transient=True,
+                            )
+                            live.start()
+
+                        # Text alongside tool calls = inline reasoning before action
+                        elif hasattr(part, "content") and isinstance(part.content, str) and has_tool_calls:
+                            reasoning = part.content.strip()
+                            if reasoning:
+                                live.stop()
+                                _print_reasoning(reasoning)
+                                live = Live(
+                                    Spinner("dots", text="[dim]thinking…[/dim]"),
+                                    console=console,
+                                    refresh_per_second=10,
+                                    transient=True,
+                                )
+                                live.start()
+
+                        # Tool call
+                        elif hasattr(part, "args_as_dict"):
                             live.stop()
                             live = Live(
                                 Spinner("dots", text=f"[dim]{part.tool_name}…[/dim]"),
@@ -289,6 +322,7 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
                             )
                             live.start()
                             print_tool_call(part.tool_name, part.args_as_dict())
+
                 elif hasattr(node, "request"):
                     for part in node.request.parts:
                         if hasattr(part, "tool_name") and hasattr(part, "content") and not hasattr(part, "args_as_dict"):
@@ -302,7 +336,6 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
                                 except Exception:
                                     pass
                             print_tool_result(ok, str(content)[:120])
-                            # spinner for next thinking phase
                             live = Live(
                                 Spinner("dots", text="[dim]thinking…[/dim]"),
                                 console=console,
@@ -310,12 +343,6 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
                                 transient=True,
                             )
                             live.start()
-
-        # ensure spinner is stopped before printing final response
-        try:
-            live.stop()
-        except Exception:
-            pass
 
         output = run.result.output
         session.message_history = run.result.all_messages()
@@ -326,12 +353,87 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
             print_agent_response(str(output))
         console.print()
 
+    except asyncio.CancelledError:
+        raise   # let _run_cancellable handle the message
     except Exception as e:
+        print_error(str(e))
+    finally:
         try:
             live.stop()
         except Exception:
             pass
-        print_error(str(e))
+
+
+# ---------------------------------------------------------------------------
+# ESC-to-cancel support
+# ---------------------------------------------------------------------------
+
+def _watch_for_escape(cancel_event: asyncio.Event, loop: asyncio.AbstractEventLoop) -> None:
+    """Background thread: set cancel_event when ESC is pressed."""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            while not cancel_event.is_set():
+                if msvcrt.kbhit():
+                    ch = msvcrt.getwch()
+                    if ch == "\x1b":
+                        loop.call_soon_threadsafe(cancel_event.set)
+                        return
+                _time.sleep(0.05)
+        else:
+            import select
+            import termios
+            import tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while not cancel_event.is_set():
+                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if r:
+                        ch = sys.stdin.read(1)
+                        if ch == "\x1b":
+                            loop.call_soon_threadsafe(cancel_event.set)
+                            return
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except Exception:
+        pass
+
+
+async def _run_cancellable(text: str, session: CobotSession) -> None:
+    """Run _handle_agent_message with ESC-to-cancel support."""
+    loop = asyncio.get_running_loop()
+    cancel_event = asyncio.Event()
+
+    console.print("  [dim]Press ESC to stop[/dim]")
+
+    watcher = threading.Thread(
+        target=_watch_for_escape,
+        args=(cancel_event, loop),
+        daemon=True,
+    )
+    watcher.start()
+
+    task = asyncio.create_task(_handle_agent_message(text, session))
+
+    async def _wait_for_cancel():
+        await cancel_event.wait()
+        task.cancel()
+
+    cancel_task = asyncio.create_task(_wait_for_cancel())
+
+    try:
+        await task
+    except asyncio.CancelledError:
+        console.print("\n  [yellow]Stopped.[/yellow]\n")
+    finally:
+        cancel_event.set()   # stop watcher thread
+        cancel_task.cancel()
+        try:
+            await cancel_task
+        except asyncio.CancelledError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -380,4 +482,4 @@ async def run_repl(session: CobotSession) -> None:
         if text.startswith("/") or text == "?":
             await _handle_slash_command(text, session)
         else:
-            await _handle_agent_message(text, session)
+            await _run_cancellable(text, session)

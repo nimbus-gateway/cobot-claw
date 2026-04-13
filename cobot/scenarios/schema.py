@@ -25,13 +25,16 @@ class FallbackPosition(BaseModel):
 class MoveJointsStep(BaseModel):
     type: Literal["move_joints"]
     joints: Annotated[list[float], Field(min_length=6, max_length=6)]
-    duration_sec: float = 5.0
+    speed: float = 1.05        # rad/s
+    accel: float = 1.4         # rad/s²
+    blend_radius: float = 0.0  # metres — >0 blends into next motion without stopping
 
 
 class MoveNamedPoseStep(BaseModel):
     type: Literal["move_named_pose"]
     pose: str
-    duration_sec: float = 5.0
+    speed: float = 1.05
+    accel: float = 1.4
     via_home: bool = False
 
 
@@ -63,6 +66,19 @@ class WaitStep(BaseModel):
     duration_sec: float
 
 
+class PathWaypoint(BaseModel):
+    joints: Annotated[list[float], Field(min_length=6, max_length=6)]
+    speed: float = 1.047
+    accel: float = 1.396
+    blend_radius: float = 0.0
+
+
+class MovePathStep(BaseModel):
+    """Send multiple waypoints as a single URScript for smooth blended motion."""
+    type: Literal["move_path"]
+    waypoints: list[PathWaypoint]
+
+
 class CheckMotionStep(BaseModel):
     type: Literal["check_motion_complete"]
     timeout_sec: float = 10.0
@@ -79,6 +95,7 @@ ScenarioStep = Annotated[
     MoveJointsStep
     | MoveNamedPoseStep
     | MoveTCPStep
+    | MovePathStep
     | ToolActionStep
     | WaitStep
     | CheckMotionStep
