@@ -1,0 +1,51 @@
+name: tech_test
+description: Recorded via /teach (5 steps)
+robot: ur3e
+steps:
+- type: move_joints
+  joints:
+  - 1.3440562
+  - -2.1078817
+  - -0.7796597
+  - -1.5354307
+  - 1.5265094
+  - 3.3404408
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: tool_action
+  tool: gripper
+  action: close
+  params:
+    speed: 247
+    force: 255
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints:
+  - 1.434112
+  - -1.797445
+  - -0.779691
+  - -1.535419
+  - 1.526541
+  - 3.340432
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 0.175917
+  - -1.797457
+  - -0.779671
+  - -1.535494
+  - 1.526546
+  - 3.340385
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: tool_action
+  tool: gripper
+  action: open
+  params:
+    speed: 247
+    force: 255
+  arm_recovery_sec: 3.0

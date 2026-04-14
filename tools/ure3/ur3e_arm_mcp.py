@@ -85,6 +85,8 @@ JOINT_LIMITS = {
 WARN_MARGIN_RAD = 0.8
 BLOCK_MARGIN_RAD = 0.3
 
+RTDE_PORT = 30004
+
 POSES = {
     "home":          [-3.16018, -0.6864, -1.4132, -2.0002, 1.63811, 3.17233],
     "retract":       [0.0,    -2.5,    2.0,    -1.0,    0.0,    0.0],
@@ -161,6 +163,163 @@ def check_joint_vector_limits(joints: list[float]) -> dict[str, Any]:
         })
 
     return {"blocked": blocked, "issues": issues}
+
+
+# ------------------------------------------------------------------------------
+# RTDE passive reader (port 30004) — works without External Control
+# ------------------------------------------------------------------------------
+# Implements just enough of the RTDE handshake to subscribe to:
+#   actual_q        – actual joint positions [6 x double]
+#   actual_TCP_pose – actual TCP pose [6 x double] (x,y,z,rx,ry,rz)
+# No ur-rtde pip package required — pure stdlib sockets.
+
+import struct
+
+# RTDE packet types
+_RTDE_REQUEST_PROTOCOL_VERSION = 86   # 'V'
+_RTDE_GET_URCONTROL_VERSION    = 118  # 'v'
+_RTDE_TEXT_MESSAGE             = 77   # 'M'
+_RTDE_DATA_PACKAGE             = 85   # 'U'
+_RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS  = 79   # 'O'
+_RTDE_CONTROL_PACKAGE_START    = 83   # 'S'
+_RTDE_CONTROL_PACKAGE_PAUSE    = 80   # 'P'
+
+_RTDE_PROTOCOL_VERSION = 2
+
+
+def _rtde_pack(ptype: int, payload: bytes = b"") -> bytes:
+    return struct.pack(">HB", 3 + len(payload), ptype) + payload
+
+
+def _rtde_recv(sock) -> tuple[int, bytes]:
+    """Read one RTDE packet; return (type, payload)."""
+    header = b""
+    while len(header) < 3:
+        chunk = sock.recv(3 - len(header))
+        if not chunk:
+            raise ConnectionError("RTDE connection closed")
+        header += chunk
+    size, ptype = struct.unpack(">HB", header)
+    payload = b""
+    remaining = size - 3
+    while len(payload) < remaining:
+        chunk = sock.recv(remaining - len(payload))
+        if not chunk:
+            raise ConnectionError("RTDE connection closed")
+        payload += chunk
+    return ptype, payload
+
+
+class RTDEReader:
+    """
+    Passive RTDE subscriber.  Connects to port 30004 and continuously
+    reads actual_q and actual_TCP_pose.  Works while any UR program is
+    running — does NOT require External Control.
+
+    Thread-safe; self-reconnects on drop.
+    """
+
+    VARIABLES = ["actual_q", "actual_TCP_pose"]   # 6 + 6 doubles = 96 bytes payload
+
+    def __init__(self, robot_ip: str, frequency: float = 10.0) -> None:
+        self._ip = robot_ip
+        self._frequency = frequency
+        self._lock = threading.Lock()
+        self._joints: list[float] | None = None
+        self._tcp: list[float] | None = None
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="rtde-reader")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+
+    @property
+    def joints(self) -> list[float] | None:
+        with self._lock:
+            return list(self._joints) if self._joints is not None else None
+
+    @property
+    def tcp(self) -> list[float] | None:
+        with self._lock:
+            return list(self._tcp) if self._tcp is not None else None
+
+    @property
+    def connected(self) -> bool:
+        with self._lock:
+            return self._joints is not None
+
+    def _loop(self) -> None:
+        import socket as _socket
+        while self._running:
+            try:
+                self._connect_and_read()
+            except Exception:
+                pass
+            if self._running:
+                with self._lock:
+                    self._joints = None
+                    self._tcp = None
+                time.sleep(2.0)   # back-off before reconnect
+
+    def _connect_and_read(self) -> None:
+        import socket as _socket
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.settimeout(5.0)
+        sock.connect((self._ip, RTDE_PORT))
+        sock.settimeout(10.0)
+
+        try:
+            # 1. Negotiate protocol version
+            sock.sendall(_rtde_pack(_RTDE_REQUEST_PROTOCOL_VERSION,
+                                    struct.pack(">H", _RTDE_PROTOCOL_VERSION)))
+            ptype, payload = _rtde_recv(sock)
+            if ptype != _RTDE_REQUEST_PROTOCOL_VERSION or not payload or payload[0] != 1:
+                raise RuntimeError("RTDE protocol version rejected")
+
+            # 2. Setup output subscription
+            recipe = ",".join(self.VARIABLES).encode()
+            freq_payload = struct.pack(">d", self._frequency) + recipe
+            sock.sendall(_rtde_pack(_RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS, freq_payload))
+            ptype, payload = _rtde_recv(sock)
+            if ptype != _RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS:
+                raise RuntimeError("RTDE setup outputs failed")
+            # payload[0] is recipe_id; rest is comma-separated type names
+            recipe_id = payload[0]
+            types_str = payload[1:].decode(errors="replace")
+            if "NOT_FOUND" in types_str:
+                raise RuntimeError(f"RTDE variable not found: {types_str}")
+
+            # 3. Start streaming
+            sock.sendall(_rtde_pack(_RTDE_CONTROL_PACKAGE_START))
+            ptype, payload = _rtde_recv(sock)
+            if ptype != _RTDE_CONTROL_PACKAGE_START or not payload or payload[0] != 1:
+                raise RuntimeError("RTDE start failed")
+
+            # 4. Read data packets
+            sock.settimeout(5.0)
+            while self._running:
+                ptype, payload = _rtde_recv(sock)
+                if ptype != _RTDE_DATA_PACKAGE:
+                    continue
+                # payload: 1 byte recipe_id + 12 doubles (actual_q[6] + actual_TCP_pose[6])
+                if len(payload) < 1 + 12 * 8:
+                    continue
+                values = struct.unpack_from(">12d", payload, 1)
+                with self._lock:
+                    self._joints = list(values[:6])
+                    self._tcp    = list(values[6:])
+
+        finally:
+            sock.close()
+
+
+# Global RTDE reader — started alongside ROS in main()
+rtde: RTDEReader | None = None
 
 
 # ------------------------------------------------------------------------------
@@ -421,11 +580,18 @@ def get_robot_status() -> dict[str, Any]:
 def get_joint_states() -> dict[str, Any]:
     """
     Return all joints in correct UR order with radians, degrees, and limit margins.
+    Falls back to RTDE if ROS/External Control is not running.
     """
     r = require_robot()
     joints = r.get_current_joints()
+    source = "ros"
+
+    if joints is None and rtde is not None and rtde.connected:
+        joints = rtde.joints
+        source = "rtde"
+
     if joints is None:
-        return {"ok": False, "message": "No joint state available"}
+        return {"ok": False, "message": "No joint state available (ROS and RTDE both unavailable)"}
 
     entries = []
     for name, value in zip(JOINTS, joints):
@@ -440,7 +606,7 @@ def get_joint_states() -> dict[str, Any]:
             "margin_rad": round(margin, 5),
         })
 
-    return {"ok": True, "joints": entries}
+    return {"ok": True, "source": source, "joints": entries}
 
 
 @mcp.tool()
@@ -516,6 +682,9 @@ def move_joints(
     speed: float = 1.05,
     accel: float = 1.4,
     blend_radius: float = 0.0,
+    wait_for_completion: bool = True,
+    completion_timeout_sec: float = 30.0,
+    completion_tolerance_rad: float = 0.03,
 ) -> dict[str, Any]:
     """
     Move directly in joint space using URScript movej() sent to port 30002.
@@ -524,12 +693,17 @@ def move_joints(
     does NOT use the ROS JointTrajectory controller, which conflicts with
     ExternalControl's servo stream and causes velocity-limit faults.
 
-    joints       – 6 joint angles in radians [base, shoulder, elbow, w1, w2, w3]
-    speed        – joint speed rad/s  (default 1.05, UR default is 1.05)
-    accel        – joint accel rad/s² (default 1.4,  UR default is 1.4)
-    blend_radius – blend radius in metres (default 0.0 = stop at waypoint).
-                   Use >0 for transit waypoints so the arm flows smoothly
-                   between consecutive moves without stopping.
+    joints                   – 6 joint angles in radians [base, shoulder, elbow, w1, w2, w3]
+    speed                    – joint speed rad/s  (default 1.05, UR default is 1.05)
+    accel                    – joint accel rad/s² (default 1.4,  UR default is 1.4)
+    blend_radius             – blend radius in metres (default 0.0 = stop at waypoint).
+                               Use >0 for transit waypoints so the arm flows smoothly
+                               between consecutive moves without stopping.
+    wait_for_completion      – if True (default), block until the arm reaches the target
+                               before returning. Set False only when using blend_radius>0
+                               in a manually-sequenced path.
+    completion_timeout_sec   – how long to wait before giving up (default 30 s)
+    completion_tolerance_rad – joint convergence threshold in rad (default 0.03)
     """
     if len(joints) != 6:
         return {"ok": False, "message": "Exactly 6 joint values are required"}
@@ -545,17 +719,37 @@ def move_joints(
     j = [float(x) for x in joints]
     try:
         script = _send_movej(j, speed=speed, accel=accel, blend_radius=blend_radius)
-        return {
-            "ok": True,
-            "message": "movej command sent",
-            "target_joints_rad": [round(x, 5) for x in j],
-            "speed_rad_s": speed,
-            "accel_rad_s2": accel,
-            "blend_radius_m": blend_radius,
-            "script": script.strip(),
-        }
     except Exception as e:
         return {"ok": False, "message": str(e)}
+
+    if wait_for_completion and blend_radius == 0.0:
+        deadline = time.time() + completion_timeout_sec
+        while time.time() < deadline:
+            time.sleep(0.1)
+            # Prefer ROS joint state; fall back to RTDE
+            current: list[float] | None = None
+            r = robot
+            if r is not None and r.current_joints is not None:
+                with r._lock:
+                    current = list(r.current_joints)
+            elif rtde is not None and rtde.connected:
+                current = rtde.joints
+            if current is not None:
+                diffs = [abs(c - t) for c, t in zip(current, j)]
+                if max(diffs) <= completion_tolerance_rad:
+                    break
+        else:
+            return {"ok": False, "message": f"Motion did not complete within {completion_timeout_sec}s"}
+
+    return {
+        "ok": True,
+        "message": "movej complete" if wait_for_completion else "movej command sent",
+        "target_joints_rad": [round(x, 5) for x in j],
+        "speed_rad_s": speed,
+        "accel_rad_s2": accel,
+        "blend_radius_m": blend_radius,
+        "script": script.strip(),
+    }
 
 
 @mcp.tool()
@@ -874,6 +1068,163 @@ def set_speed(percent: int) -> dict[str, Any]:
         return {"ok": False, "message": str(e)}
 
 
+@mcp.tool()
+@safe_tool
+def rtde_get_joints() -> dict[str, Any]:
+    """
+    Read actual joint positions directly via RTDE (port 30004).
+
+    Works WITHOUT External Control running — use this while running a native
+    UR program from the teach pendant to capture actual joint values at any
+    waypoint (pause the program, then call this tool).
+
+    Returns joint angles in radians in UR order:
+      [base, shoulder, elbow, wrist_1, wrist_2, wrist_3]
+    """
+    if rtde is None or not rtde.connected:
+        return {"ok": False, "message": "RTDE not connected — is the robot powered on and reachable?"}
+
+    joints = rtde.joints
+    if joints is None:
+        return {"ok": False, "message": "No RTDE data yet"}
+
+    entries = []
+    for name, value in zip(JOINTS, joints):
+        entries.append({
+            "joint": name,
+            "value_rad": round(value, 7),
+            "value_deg": round(rad_to_deg(value), 4),
+        })
+
+    return {
+        "ok": True,
+        "source": "rtde",
+        "joints": entries,
+        "joints_rad": [round(v, 7) for v in joints],
+        "note": "These are the robot's actual joint positions — safe to copy into YAML waypoints",
+    }
+
+
+@mcp.tool()
+@safe_tool
+def rtde_get_tcp() -> dict[str, Any]:
+    """
+    Read actual TCP pose directly via RTDE (port 30004).
+
+    Works WITHOUT External Control running.
+    Returns TCP pose as [x, y, z, rx, ry, rz] in robot base frame
+    where rx/ry/rz is a rotation vector (axis * angle).
+    """
+    if rtde is None or not rtde.connected:
+        return {"ok": False, "message": "RTDE not connected — is the robot powered on and reachable?"}
+
+    tcp = rtde.tcp
+    if tcp is None:
+        return {"ok": False, "message": "No RTDE data yet"}
+
+    return {
+        "ok": True,
+        "source": "rtde",
+        "tcp_pose": {
+            "x":  round(tcp[0], 6),
+            "y":  round(tcp[1], 6),
+            "z":  round(tcp[2], 6),
+            "rx": round(tcp[3], 6),
+            "ry": round(tcp[4], 6),
+            "rz": round(tcp[5], 6),
+        },
+        "note": "Rotation vector (axis*angle). Matches UR script _p[x,y,z,rx,ry,rz] format.",
+    }
+
+
+@mcp.tool()
+@safe_tool
+def jog_joint(
+    joint_index: int,
+    direction: int,
+    step: float = 0.02,
+    speed: float = 0.3,
+    accel: float = 0.5,
+) -> dict[str, Any]:
+    """
+    Jog a single joint by one step in the given direction.
+
+    Reads current joint positions via RTDE, applies the delta, checks soft
+    limits, and sends movej().  Designed for rapid repeated calls from a
+    keyboard jog interface — no LLM involved.
+
+    joint_index  – 0=base, 1=shoulder, 2=elbow, 3=wrist_1, 4=wrist_2, 5=wrist_3
+    direction    – +1 or -1
+    step         – step size in radians (default 0.02)
+    speed        – movej speed in rad/s (default 0.3)
+    accel        – movej accel in rad/s² (default 0.5)
+    """
+    import socket as _socket
+
+    if not 0 <= joint_index <= 5:
+        return {"ok": False, "message": "joint_index must be 0–5"}
+    if direction not in (1, -1):
+        return {"ok": False, "message": "direction must be +1 or -1"}
+    if not 0.001 <= step <= 0.15:
+        return {"ok": False, "message": "step must be between 0.001 and 0.15 rad"}
+
+    # Read current joints — prefer RTDE (works without External Control)
+    joints: list[float] | None = None
+    source = "none"
+    if rtde is not None and rtde.connected:
+        joints = rtde.joints
+        source = "rtde"
+    if joints is None and robot is not None:
+        joints = robot.get_current_joints()
+        source = "ros"
+    if joints is None:
+        return {"ok": False, "message": "No joint data available (RTDE and ROS both unavailable)"}
+
+    target = list(joints)
+    target[joint_index] += direction * step
+
+    # Soft limit check
+    limit_check = check_joint_vector_limits(target)
+    if limit_check["blocked"]:
+        return {
+            "ok": False,
+            "message": f"Joint {joint_index} soft limit reached — move blocked",
+            "issues": limit_check["issues"],
+            "current_joints": [round(x, 5) for x in joints],
+        }
+
+    # Send movej
+    j = target
+    script = (
+        f"movej([{j[0]:.6f},{j[1]:.6f},{j[2]:.6f},"
+        f"{j[3]:.6f},{j[4]:.6f},{j[5]:.6f}],"
+        f"a={accel:.3f},v={speed:.3f})\n"
+    )
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    sock.settimeout(3.0)
+    sock.connect((ROBOT_IP, 30002))
+    sock.sendall(script.encode())
+    sock.close()
+
+    # Update motion tracking
+    r = robot
+    if r is not None:
+        with r._lock:
+            r.last_target_joints = target
+            r.last_command_time = time.time()
+
+    return {
+        "ok": True,
+        "joint_index": joint_index,
+        "joint_name": JOINTS[joint_index],
+        "direction": direction,
+        "step_rad": step,
+        "new_value_rad": round(target[joint_index], 6),
+        "joints_rad": [round(x, 6) for x in target],
+        "source": source,
+    }
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
     return {
@@ -885,6 +1236,13 @@ async def health_check(request):
 
 
 def main() -> None:
+    global rtde
+
+    # Start RTDE passive reader — works independently of ROS/External Control
+    rtde = RTDEReader(robot_ip=ROBOT_IP, frequency=10.0)
+    rtde.start()
+    print(f"RTDE reader started (connecting to {ROBOT_IP}:{RTDE_PORT})...", flush=True)
+
     ros_thread = threading.Thread(target=ros_spin_thread, daemon=True)
     ros_thread.start()
 
@@ -893,11 +1251,16 @@ def main() -> None:
     print("Waiting for robot joint states...", flush=True)
     for _ in range(50):
         time.sleep(0.2)
-        if robot is not None and robot.current_joints is not None:
-            print("Robot connected.", flush=True)
+        ros_ok = robot is not None and robot.current_joints is not None
+        rtde_ok = rtde.connected
+        if ros_ok or rtde_ok:
+            src = []
+            if ros_ok:  src.append("ROS")
+            if rtde_ok: src.append("RTDE")
+            print(f"Robot connected via: {', '.join(src)}", flush=True)
             break
     else:
-        print("WARNING: No joint states yet. Is UR driver running?", flush=True)
+        print("WARNING: No joint states yet from ROS or RTDE. Is the robot powered on?", flush=True)
 
     print(f"Starting MCP HTTP server on http://{SERVER_HOST}:{SERVER_PORT}/mcp", flush=True)
     mcp.run(transport="streamable-http")

@@ -22,6 +22,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
+from cobot.cli.commands.teach import cmd_teach
 from cobot.cli.commands.scenario import cmd_run, cmd_scenarios
 from cobot.cli.commands.status import cmd_status
 from cobot.cli.completer import CobotCompleter
@@ -87,50 +88,6 @@ def _build_bindings() -> KeyBindings:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Teach mode
-# ---------------------------------------------------------------------------
-
-async def _cmd_teach(session: CobotSession, scenario_name: str, duration_sec: float = 30.0) -> None:
-    """Record arm waypoints in freedrive and save as a scenario YAML."""
-    from rich.live import Live
-    from rich.spinner import Spinner
-
-    if session.deps is None or session.deps.config_deps is None:
-        print_error("Config Agent not available (no connection or RAG not wired).")
-        return
-
-    console.print(
-        f"\n  [bold]Teach mode[/bold] — recording [cyan]{scenario_name}[/cyan] "
-        f"for [bold]{int(duration_sec)}s[/bold]\n"
-        "  [dim]Enable freedrive on the robot pendant, then press Enter to start…[/dim]"
-    )
-    try:
-        input()
-    except (EOFError, KeyboardInterrupt):
-        console.print("  [yellow]Cancelled.[/yellow]")
-        return
-
-    live = Live(
-        Spinner("dots", text=f"[dim]Recording waypoints for {int(duration_sec)}s…[/dim]"),
-        console=console,
-        refresh_per_second=10,
-        transient=True,
-    )
-    live.start()
-    try:
-        from cobot.agents.config_agent import build_config_agent
-        agent = build_config_agent(session.cfg)
-        result = await agent.run(
-            f"teach_mode scenario_name={scenario_name} duration_sec={duration_sec}",
-            deps=session.deps.config_deps,
-        )
-        live.stop()
-        console.print(f"\n  [green]✓[/green]  {result.output}\n")
-    except Exception as e:
-        live.stop()
-        print_error(f"Teach mode failed: {e}")
-
-
 # ---------------------------------------------------------------------------
 # Manual ingest
 # ---------------------------------------------------------------------------
@@ -176,8 +133,7 @@ _HELP_TEXT = """
   [cyan]/scenarios[/cyan]           List saved scenarios
   [cyan]/run[/cyan] [dim]<name>[/dim]          Execute a scenario
   [cyan]/run[/cyan] [dim]<name> --dry[/dim]    Preview steps without moving
-  [cyan]/teach[/cyan] [dim]<name>[/dim]        Record arm movements and save as scenario
-  [cyan]/teach[/cyan] [dim]<name> --dur 60[/dim]  Teach mode with custom duration (seconds)
+  [cyan]/teach[/cyan] [dim][step][/dim]         Keyboard-jog joints, record waypoints + gripper actions
   [cyan]/ingest[/cyan] [dim][path][/dim]       Index robot manuals into RAG knowledge base
   [cyan]/reconnect[/cyan]           Reconnect to robot MCP servers
   [cyan]/clear[/cyan]               Clear the screen
@@ -215,19 +171,8 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
                 await cmd_run(session, parts[1], dry_run=dry)
 
         case "/teach":
-            name = parts[1] if len(parts) > 1 else None
-            if not name:
-                print_error("Usage: /teach <scenario_name> [--dur <seconds>]")
-            else:
-                dur = 30.0
-                if "--dur" in parts:
-                    idx = parts.index("--dur")
-                    try:
-                        dur = float(parts[idx + 1])
-                    except (IndexError, ValueError):
-                        print_error("--dur requires a number of seconds")
-                        return
-                await _cmd_teach(session, name, duration_sec=dur)
+            step = float(parts[1]) if len(parts) > 1 else 0.02
+            await cmd_teach(session, step=step)
 
         case "/ingest":
             path = parts[1] if len(parts) > 1 else "./manuals"
