@@ -150,6 +150,7 @@ def print_welcome(
     tips.add_row("/status",    "robot state")
     tips.add_row("/scenarios", "list saved scenarios")
     tips.add_row("/run",       "<name> [--dry]  execute scenario")
+    tips.add_row("/teach",     "jog joints with keyboard, teach the robot")
     tips.add_row("/help",      "all commands")
 
     hint = Text("\nOr just type naturally — the agent will figure it out.", style="dim italic")
