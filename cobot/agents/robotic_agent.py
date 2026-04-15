@@ -39,12 +39,15 @@ def build_robotic_agent(cfg: CobotConfig) -> Agent:
         deps_type=RoboticAgentDeps,
         output_type=RoboticAgentResult,
         system_prompt=(
-            "You control a UR robot arm and its attached tools. "
-            "For named scenarios use run_scenario. "
-            "For direct arm moves use the arm tools (get_arm_status, move_to_pose, get_joint_states, get_tcp_pose). "
+            "You control a UR robot arm and its attached tools.\n"
+            "Joint order: 0=base, 1=shoulder, 2=elbow, 3=wrist_1, 4=wrist_2, 5=wrist_3.\n"
+            "For named scenarios use run_scenario.\n"
+            "To move a joint by a relative amount (e.g. 'move base 5 degrees') use move_joints_delta — "
+            "never use move_to_pose for joint-space moves.\n"
+            "move_to_pose is ONLY for named poses like 'home' or 'retract'.\n"
             "For end-effectors, call list_tool_mcps first to discover what is attached, "
-            "then use call_tool_action to operate it. "
-            "Always check arm status before moving. "
+            "then use call_tool_action to operate it.\n"
+            "Always check arm status before moving.\n"
             "Return a RoboticAgentResult when done."
         ),
     )
@@ -72,6 +75,55 @@ def build_robotic_agent(cfg: CobotConfig) -> Agent:
     async def get_tcp_pose(ctx: RunContext[RoboticAgentDeps]) -> dict:
         """Get the current TCP position and orientation in the robot base frame."""
         return await ctx.deps.arm_mcp.call_tool("get_tcp_pose", {})
+
+    @agent.tool
+    async def move_joints_delta(
+        ctx: RunContext[RoboticAgentDeps],
+        joint_index: int,
+        delta_degrees: float,
+        speed: float = 0.5,
+        accel: float = 0.8,
+    ) -> dict:
+        """
+        Move a single joint by a relative amount in degrees.
+
+        joint_index   – 0=base, 1=shoulder, 2=elbow, 3=wrist_1, 4=wrist_2, 5=wrist_3
+        delta_degrees – how many degrees to move (positive or negative)
+        speed         – joint speed in rad/s (default 0.5)
+        accel         – joint accel in rad/s² (default 0.8)
+
+        Use this for requests like "move the base by 5 degrees" or "rotate elbow -10 degrees".
+        """
+        import math
+        # Get current joints
+        state = await ctx.deps.arm_mcp.call_tool("get_joint_states", {})
+        if not state.get("ok"):
+            return {"ok": False, "message": f"Could not read joint states: {state.get('message')}"}
+        raw = state.get("joints_rad") or state.get("joints")
+        if not raw or len(raw) < 6:
+            return {"ok": False, "message": "Joint state unavailable"}
+        # joints may be a list of dicts {"value_rad": ...} or a plain list of floats
+        if isinstance(raw[0], dict):
+            current = [e["value_rad"] for e in raw]
+        else:
+            current = list(raw)
+        if not (0 <= joint_index <= 5):
+            return {"ok": False, "message": f"joint_index must be 0–5, got {joint_index}"}
+
+        target = list(current)  # current is already a plain float list
+        target[joint_index] += math.radians(delta_degrees)
+
+        result = await ctx.deps.arm_mcp.call_tool("move_joints", {
+            "joints": target,
+            "speed": speed,
+            "accel": accel,
+            "blend_radius": 0.0,
+        })
+        if result.get("ok"):
+            result["moved_joint"] = joint_index
+            result["delta_degrees"] = delta_degrees
+            result["new_value_degrees"] = round(math.degrees(target[joint_index]), 2)
+        return result
 
     @agent.tool
     async def list_scenarios(ctx: RunContext[RoboticAgentDeps]) -> list[str]:

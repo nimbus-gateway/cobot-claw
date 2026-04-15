@@ -1,0 +1,117 @@
+name: pick_the_bottle
+description: Recorded via /teach (11 steps)
+robot: ur3e
+steps:
+- type: move_joints
+  joints:
+  - 1.151908
+  - -1.467556
+  - -1.403377
+  - -1.746785
+  - 1.567782
+  - 3.172426
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 1.151869
+  - -1.623282
+  - -1.401044
+  - -1.746724
+  - 1.56779
+  - 3.172478
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: tool_action
+  tool: gripper
+  action: close
+  params:
+    speed: 100
+    force: 100
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints:
+  - 1.151843
+  - -1.453291
+  - -1.401091
+  - -1.746713
+  - 1.567811
+  - 3.172478
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 0.330917
+  - -1.453313
+  - -1.400987
+  - -1.746613
+  - 1.567802
+  - 3.172474
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 0.330943
+  - -1.548159
+  - -1.400972
+  - -1.746298
+  - 1.567768
+  - 3.17245
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 0.330931
+  - -1.548135
+  - -1.231017
+  - -1.746315
+  - 1.567797
+  - 3.172414
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 0.330946
+  - -1.548123
+  - -1.231091
+  - -1.41163
+  - 1.567806
+  - 3.172414
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 0.330936
+  - -1.873726
+  - -1.231115
+  - -1.411597
+  - 1.567802
+  - 3.172426
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 0.330951
+  - -1.8737
+  - -1.231206
+  - -1.155155
+  - 1.567806
+  - 3.17243
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: tool_action
+  tool: gripper
+  action: open
+  params:
+    speed: 100
+    force: 100
+  arm_recovery_sec: 3.0
