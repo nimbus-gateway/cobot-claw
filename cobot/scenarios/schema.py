@@ -91,6 +91,21 @@ class RepeatStep(BaseModel):
     steps: list[ScenarioStep]
 
 
+class VisualServoStep(BaseModel):
+    """Re-detect object at approach height, correct XY, then descend to grasp.
+
+    Falls back to fallback_joints if vision is unavailable or detection fails.
+    """
+    type: Literal["visual_servo"]
+    pick_description: str      # natural-language label passed to Gemini ER
+    approach_z: float          # Z (base frame) to hold while correcting XY
+    grasp_z: float             # Z (base frame) to descend to for grasp
+    fallback_joints: Annotated[list[float], Field(min_length=6, max_length=6)]
+    speed: float = 0.05
+    accel: float = 0.2
+    threshold_mm: float = 2.0  # skip XY correction if offset < this
+
+
 ScenarioStep = Annotated[
     MoveJointsStep
     | MoveNamedPoseStep
@@ -99,7 +114,8 @@ ScenarioStep = Annotated[
     | ToolActionStep
     | WaitStep
     | CheckMotionStep
-    | RepeatStep,
+    | RepeatStep
+    | VisualServoStep,
     Field(discriminator="type"),
 ]
 

@@ -6,6 +6,7 @@ from cobot.config import CobotConfig
 from cobot.mcp.client import MCPClient
 from cobot.mcp.perception_contract import PerceptionClient
 from cobot.scenarios.executor import ScenarioExecutor
+from cobot.agents.vision_agent.agent import VisionAgentDeps  # noqa: F401 — re-export
 
 
 @dataclass

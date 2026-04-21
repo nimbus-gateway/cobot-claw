@@ -21,7 +21,7 @@ import structlog
 from cobot.scenarios.schema import (
     Scenario, ScenarioStep,
     MoveJointsStep, MoveNamedPoseStep, MoveTCPStep, MovePathStep,
-    ToolActionStep, WaitStep, CheckMotionStep, RepeatStep,
+    ToolActionStep, WaitStep, CheckMotionStep, RepeatStep, VisualServoStep,
 )
 from cobot.mcp.client import MCPClient
 from cobot.mcp.perception_contract import PerceptionClient
@@ -63,10 +63,12 @@ class ScenarioExecutor:
         arm_mcp: MCPClient,
         tool_mcps: dict[str, MCPClient],   # e.g. {"gripper": MCPClient(...)}
         perception: PerceptionClient,
+        vision_fn=None,   # async (description: str) -> dict | None — for visual servo
     ):
         self.arm = arm_mcp
         self.tools = tool_mcps
         self.perception = perception
+        self.vision_fn = vision_fn
 
     @staticmethod
     def load(path: str | Path) -> Scenario:
@@ -206,8 +208,77 @@ class ScenarioExecutor:
                     await asyncio.sleep(0.2)
                 return {"ok": False, "message": "Motion completion timeout"}
 
+            case VisualServoStep():
+                return await self._execute_visual_servo(step)
+
             case _:
                 return {"ok": False, "message": f"Unknown step type: {step.type}"}
+
+    async def _execute_visual_servo(self, step: VisualServoStep) -> dict:
+        """Re-detect object at approach height, correct XY, descend to grasp.
+
+        Falls back to fallback_joints if vision is unavailable or detection fails.
+        """
+        from cobot.agents.vision_agent.kinematics import get_joints_for_pose
+
+        if self.vision_fn is None:
+            logger.info("executor.visual_servo_fallback", reason="no vision_fn")
+            return await self.arm.call_tool("move_joints", {
+                "joints": step.fallback_joints,
+                "speed": step.speed,
+                "accel": step.accel,
+                "blend_radius": 0.0,
+            })
+
+        pos = await self.vision_fn(step.pick_description)
+        if pos is None:
+            logger.warning("executor.visual_servo_fallback", reason="detection failed",
+                           description=step.pick_description)
+            return await self.arm.call_tool("move_joints", {
+                "joints": step.fallback_joints,
+                "speed": step.speed,
+                "accel": step.accel,
+                "blend_radius": 0.0,
+            })
+
+        x, y = pos["x"], pos["y"]
+        logger.info("executor.visual_servo", corrected_xy=(round(x, 4), round(y, 4)))
+
+        j_approach = get_joints_for_pose("servo_approach", x, y, step.approach_z)
+        if j_approach is None:
+            logger.warning("executor.visual_servo_fallback", reason="IK failed for approach")
+            return await self.arm.call_tool("move_joints", {
+                "joints": step.fallback_joints,
+                "speed": step.speed,
+                "accel": step.accel,
+                "blend_radius": 0.0,
+            })
+
+        r = await self.arm.call_tool("move_joints", {
+            "joints": j_approach,
+            "speed": step.speed,
+            "accel": step.accel,
+            "blend_radius": 0.0,
+        })
+        if not r.get("ok", True):
+            return r
+
+        j_grasp = get_joints_for_pose("servo_grasp", x, y, step.grasp_z, q_seed=j_approach)
+        if j_grasp is None:
+            logger.warning("executor.visual_servo_fallback", reason="IK failed for grasp")
+            return await self.arm.call_tool("move_joints", {
+                "joints": step.fallback_joints,
+                "speed": step.speed,
+                "accel": step.accel,
+                "blend_radius": 0.0,
+            })
+
+        return await self.arm.call_tool("move_joints", {
+            "joints": j_grasp,
+            "speed": step.speed * 0.5,
+            "accel": step.accel * 0.5,
+            "blend_radius": 0.0,
+        })
 
     async def _resolve_tcp_position(self, step: MoveTCPStep) -> dict:
         """Use perception if available, otherwise fall back to step coordinates."""

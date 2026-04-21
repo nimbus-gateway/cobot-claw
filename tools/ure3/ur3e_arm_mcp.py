@@ -1002,10 +1002,10 @@ def move_tcp_pose(
     Move the TCP to a Cartesian pose using URScript movel() sent directly to
     the robot controller on port 30002.  The robot's internal IK resolves joints.
 
-    x, y, z   – target TCP position in robot base frame (metres)
-    qx,qy,qz,qw – target orientation as quaternion
-    speed     – linear speed m/s (default 0.05 m/s – slow/safe)
-    accel     – linear acceleration m/s² (default 0.3)
+    x, y, z      – target TCP position in robot base frame (metres)
+    qx,qy,qz,qw  – target orientation as quaternion
+    speed        – linear speed m/s (default 0.05 m/s – slow/safe)
+    accel        – linear acceleration m/s² (default 0.3)
     """
     import socket
 
@@ -1165,8 +1165,8 @@ def jog_joint(
         return {"ok": False, "message": "joint_index must be 0–5"}
     if direction not in (1, -1):
         return {"ok": False, "message": "direction must be +1 or -1"}
-    if not 0.001 <= step <= 0.15:
-        return {"ok": False, "message": "step must be between 0.001 and 0.15 rad"}
+    if not 0.001 <= step <= 0.50:
+        return {"ok": False, "message": "step must be between 0.001 and 0.50 rad"}
 
     # Read current joints — prefer RTDE (works without External Control)
     joints: list[float] | None = None

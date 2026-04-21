@@ -62,7 +62,7 @@ KEY_MAP: dict[str, tuple[int, int]] = {
 }
 
 STEP_MIN = 0.005
-STEP_MAX = 0.10
+STEP_MAX = 0.50
 STEP_INC = 0.005
 DEFAULT_STEP  = 0.02
 DEFAULT_SPEED = 0.30

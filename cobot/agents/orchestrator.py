@@ -18,7 +18,7 @@ from pydantic_ai import Agent, RunContext
 
 from cobot.config import CobotConfig
 from cobot.llm import make_model
-from cobot.agents.deps import RoboticAgentDeps, ConfigAgentDeps
+from cobot.agents.deps import RoboticAgentDeps, ConfigAgentDeps, VisionAgentDeps
 
 
 @dataclass
@@ -26,6 +26,7 @@ class OrchestratorDeps:
     robotic_deps: RoboticAgentDeps
     cfg: CobotConfig
     config_deps: ConfigAgentDeps | None = None
+    vision_deps: VisionAgentDeps | None = None
 
     # Backward-compat: allow old code that passes scenario_deps= keyword
     @classmethod
@@ -36,21 +37,34 @@ class OrchestratorDeps:
 def build_orchestrator(cfg: CobotConfig) -> Agent:
     from cobot.agents.robotic_agent import build_robotic_agent
     from cobot.agents.config_agent import build_config_agent
+    from cobot.agents.vision_agent import build_vision_agent
 
     _robotic_agent = build_robotic_agent(cfg)
     _config_agent = build_config_agent(cfg)
+    _vision_agent = build_vision_agent(cfg)
 
     agent: Agent[OrchestratorDeps, str] = Agent(
         make_model(cfg.agents.orchestrator.model, cfg),
         deps_type=OrchestratorDeps,
         output_type=str,
+        retries=1,
         system_prompt=(
-            "You orchestrate a UR robot system. "
-            "For ALL robot interactions — status queries, movements, tool control, "
-            "scenario execution — delegate to run_robotic_task. "
-            "For questions about robot specs, safety, error codes, payload limits, "
-            "configuration, manuals, or teach-by-demo — delegate to run_config_task. "
-            "Never call robot hardware directly."
+            "You orchestrate a UR robot system.\n\n"
+            "Routing rules — follow these exactly:\n"
+            "• Robot status, movements, tool control, running an EXISTING scenario "
+            "→ run_robotic_task\n"
+            "• Visual perception (what objects are visible, where is X, workspace check) "
+            "→ run_vision_task\n"
+            "• CREATING a new pick-and-place scenario (user says 'create scenario', "
+            "'generate scenario', 'make a scenario') "
+            "→ run_vision_task with the pick and place descriptions. "
+            "The Vision Agent handles detection AND scenario generation in one call. "
+            "Do NOT call run_robotic_task to create scenarios.\n"
+            "• Robot manuals, specs, safety questions, teach-by-demo "
+            "→ run_config_task\n\n"
+            "Never call robot hardware or camera directly.\n"
+            "After a tool returns its result, immediately return that result as your "
+            "final response. Do not call any tool more than once per user request."
         ),
     )
 
@@ -61,6 +75,15 @@ def build_orchestrator(cfg: CobotConfig) -> Agent:
     ) -> str:
         """Delegate any robot task to the Robotic Agent — status, movements, tool actions, scenarios."""
         result = await _robotic_agent.run(task_description, deps=ctx.deps.robotic_deps)
+        return str(result.output)
+
+    @agent.tool
+    async def run_vision_task(
+        ctx: RunContext[OrchestratorDeps],
+        task_description: str,
+    ) -> str:
+        """Delegate to the Vision Agent — object detection, 3D location, workspace check, AND creating new pick-and-place scenarios."""
+        result = await _vision_agent.run(task_description, deps=ctx.deps.vision_deps)
         return str(result.output)
 
     @agent.tool

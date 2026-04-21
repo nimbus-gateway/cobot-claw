@@ -221,6 +221,105 @@ class TestCheckMotionStep:
         assert "timeout" in result.step_results[0].response["message"]
 
 
+class TestWaypointOrdering:
+    """Ensure multi-waypoint scenarios call move_joints in the correct order
+    and do not skip any steps (regression for fire-and-forget bug)."""
+
+    async def test_all_waypoints_called_in_order(self):
+        arm = MagicMock()
+        calls = []
+
+        async def call_tool(name, args):
+            calls.append((name, dict(args)))
+            return {"ok": True}
+
+        arm.call_tool = call_tool
+        executor = ScenarioExecutor(arm, {}, PerceptionClient())
+
+        waypoints = [
+            [0.1, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.3, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.4, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ]
+        scenario = Scenario(name="test", steps=[
+            MoveJointsStep(type="move_joints", joints=j, duration_sec=1.0)
+            for j in waypoints
+        ])
+
+        result = await executor.run(scenario)
+
+        assert result.success is True
+        assert result.steps_completed == 4
+
+        move_calls = [c for c in calls if c[0] == "move_joints"]
+        assert len(move_calls) == 4
+        for i, mc in enumerate(move_calls):
+            assert mc[1]["joints"] == waypoints[i], (
+                f"Waypoint {i} mismatch: expected {waypoints[i]}, got {mc[1]['joints']}"
+            )
+
+    async def test_waypoints_not_skipped_when_earlier_one_is_slow(self):
+        """Simulate a slow first move — subsequent waypoints must still execute."""
+        arm = MagicMock()
+        calls = []
+
+        async def call_tool(name, args):
+            calls.append((name, dict(args)))
+            return {"ok": True}
+
+        arm.call_tool = call_tool
+        executor = ScenarioExecutor(arm, {}, PerceptionClient())
+
+        scenario = Scenario(name="test", steps=[
+            MoveJointsStep(type="move_joints", joints=[float(i)] + [0.0]*5, duration_sec=0.5)
+            for i in range(3)
+        ])
+
+        result = await executor.run(scenario)
+
+        assert result.success is True
+        assert result.steps_completed == 3
+        move_calls = [c for c in calls if c[0] == "move_joints"]
+        assert len(move_calls) == 3
+        # Verify joints are in increasing order (not collapsed to last)
+        base_joints = [mc[1]["joints"][0] for mc in move_calls]
+        assert base_joints == [0.0, 1.0, 2.0]
+
+    async def test_joint_and_tool_steps_interleaved(self):
+        """Scenario with move_joints and tool_action steps executes all in order."""
+        arm = MagicMock()
+        gripper = MagicMock()
+        arm_calls = []
+        gripper_calls = []
+
+        async def arm_call(name, args):
+            arm_calls.append(name)
+            return {"ok": True}
+
+        async def gripper_call(name, args):
+            gripper_calls.append(name)
+            return {"ok": True}
+
+        arm.call_tool = arm_call
+        gripper.call_tool = gripper_call
+        executor = ScenarioExecutor(arm, {"gripper": gripper}, PerceptionClient())
+
+        scenario = Scenario(name="test", steps=[
+            MoveJointsStep(type="move_joints", joints=[0.0]*6, duration_sec=1.0),
+            ToolActionStep(type="tool_action", tool="gripper", action="close", arm_recovery_sec=0.0),
+            MoveJointsStep(type="move_joints", joints=[0.5]*6, duration_sec=1.0),
+            ToolActionStep(type="tool_action", tool="gripper", action="open", arm_recovery_sec=0.0),
+        ])
+
+        result = await executor.run(scenario)
+
+        assert result.success is True
+        assert result.steps_completed == 4
+        assert arm_calls.count("move_joints") == 2
+        assert gripper_calls == ["close", "open"]
+
+
 class TestLoadYaml:
     def test_load_pick_place(self):
         path = Path("cobot/scenarios/store/pick_place.yaml")

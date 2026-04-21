@@ -36,9 +36,8 @@ class SafetyAgentConfig(AgentModelConfig):
         return v
 
 
-class PerceptionAgentConfig(AgentModelConfig):
-    enabled: bool = False
-    endpoint: str | None = None
+class VisionAgentConfig(AgentModelConfig):
+    google_api_key: str = ""   # leave blank to use GOOGLE_API_KEY env var
 
 
 class AgentsConfig(BaseModel):
@@ -46,7 +45,7 @@ class AgentsConfig(BaseModel):
     scenario: AgentModelConfig
     config: AgentModelConfig
     safety: SafetyAgentConfig
-    perception: PerceptionAgentConfig
+    vision: VisionAgentConfig
 
 
 class ScenariosConfig(BaseModel):

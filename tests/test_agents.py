@@ -301,6 +301,101 @@ class TestRoboticAgentTools:
         result = await fn(ctx, tool="gripper", action="get_status")
         assert calls[0] == ("get_status", {})
 
+    async def test_move_joints_delta_calls_move_joints(self):
+        """move_joints_delta must read current joints then call move_joints with the delta applied."""
+        import math
+
+        arm_calls = []
+
+        # get_joint_states returns joints as a list of dicts (real MCP format)
+        joint_entries = [
+            {"joint": j, "value_rad": 0.0, "value_deg": 0.0,
+             "limit_low_rad": -6.28, "limit_high_rad": 6.28, "margin_rad": 6.28}
+            for j in ["base", "shoulder", "elbow", "wrist_1", "wrist_2", "wrist_3"]
+        ]
+
+        async def arm_call(name, args):
+            arm_calls.append((name, args))
+            if name == "get_joint_states":
+                return {"ok": True, "joints": joint_entries}
+            return {"ok": True}
+
+        cfg = _make_cfg()
+        agent = build_robotic_agent(cfg)
+        arm = MagicMock()
+        arm.call_tool = arm_call
+        perception = PerceptionClient()
+        executor = ScenarioExecutor(arm, {}, perception)
+        deps = RoboticAgentDeps(arm, {}, executor, perception, cfg)
+        fn = _get_tool(agent, "move_joints_delta")
+        ctx = MagicMock()
+        ctx.deps = deps
+
+        result = await fn(ctx, joint_index=0, delta_degrees=10.0)
+
+        assert result["ok"] is True
+        assert result["moved_joint"] == 0
+        assert abs(result["delta_degrees"] - 10.0) < 0.001
+
+        # The second call should be move_joints with joint[0] shifted by 10 degrees
+        move_call = next(c for c in arm_calls if c[0] == "move_joints")
+        expected = math.radians(10.0)
+        assert abs(move_call[1]["joints"][0] - expected) < 1e-6
+        # All other joints unchanged
+        for i in range(1, 6):
+            assert move_call[1]["joints"][i] == 0.0
+
+    async def test_move_joints_delta_invalid_index(self):
+        """joint_index out of 0–5 must return ok=False without calling move_joints."""
+        arm_calls = []
+        joint_entries = [
+            {"joint": j, "value_rad": 0.0, "value_deg": 0.0,
+             "limit_low_rad": -6.28, "limit_high_rad": 6.28, "margin_rad": 6.28}
+            for j in ["base", "shoulder", "elbow", "wrist_1", "wrist_2", "wrist_3"]
+        ]
+
+        async def arm_call(name, args):
+            arm_calls.append((name, args))
+            if name == "get_joint_states":
+                return {"ok": True, "joints": joint_entries}
+            return {"ok": True}
+
+        cfg = _make_cfg()
+        agent = build_robotic_agent(cfg)
+        arm = MagicMock()
+        arm.call_tool = arm_call
+        perception = PerceptionClient()
+        executor = ScenarioExecutor(arm, {}, perception)
+        deps = RoboticAgentDeps(arm, {}, executor, perception, cfg)
+        fn = _get_tool(agent, "move_joints_delta")
+        ctx = MagicMock()
+        ctx.deps = deps
+
+        result = await fn(ctx, joint_index=7, delta_degrees=5.0)
+        assert result["ok"] is False
+        assert not any(c[0] == "move_joints" for c in arm_calls)
+
+    async def test_move_joints_delta_joint_state_unavailable(self):
+        """If get_joint_states fails, move_joints_delta must return ok=False."""
+        async def arm_call(name, args):
+            if name == "get_joint_states":
+                return {"ok": False, "message": "RTDE unavailable"}
+            return {"ok": True}
+
+        cfg = _make_cfg()
+        agent = build_robotic_agent(cfg)
+        arm = MagicMock()
+        arm.call_tool = arm_call
+        perception = PerceptionClient()
+        executor = ScenarioExecutor(arm, {}, perception)
+        deps = RoboticAgentDeps(arm, {}, executor, perception, cfg)
+        fn = _get_tool(agent, "move_joints_delta")
+        ctx = MagicMock()
+        ctx.deps = deps
+
+        result = await fn(ctx, joint_index=0, delta_degrees=5.0)
+        assert result["ok"] is False
+
     async def test_move_to_pose(self):
         calls = []
 

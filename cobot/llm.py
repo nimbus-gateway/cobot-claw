@@ -44,7 +44,7 @@ def make_model(model_name: str, cfg: CobotConfig):
     else:
         # local / Ollama
         api_key = cfg.llm.api_key or "local"
-        client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=api_key)
+        client = AsyncOpenAI(base_url=cfg.llm.base_url, api_key=api_key, timeout=60.0)
 
     provider_obj = OpenAIProvider(openai_client=client)
     return OpenAIChatModel(model_name, provider=provider_obj)

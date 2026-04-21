@@ -92,13 +92,10 @@ async def _connect_session(session: CobotSession) -> None:
             session.mcp_status["gripper"] = False
             console.print(f"  [yellow]⚠[/yellow]  Gripper MCP unavailable ({robot.gripper_mcp_url}): {e}")
 
-    perception = PerceptionClient(
-        enabled=session.cfg.agents.perception.enabled,
-    )
-
-    executor = ScenarioExecutor(arm, tool_mcps, perception)  # type: ignore[arg-type]
+    perception = PerceptionClient()
 
     from cobot.agents.deps import ConfigAgentDeps
+    from cobot.agents.vision_agent import VisionAgentDeps
     from cobot.rag.pipeline import RAGPipeline
 
     rag = RAGPipeline(db_path=session.cfg.rag.db_path, cfg=session.cfg)
@@ -109,10 +106,21 @@ async def _connect_session(session: CobotSession) -> None:
         cfg=session.cfg,
     )
 
+    vision_deps = VisionAgentDeps(cfg=session.cfg)
+    session.mcp_status["vision"] = True
+
+    async def _vision_servo_fn(description: str) -> dict | None:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, vision_deps.locate_sync, description)
+
+    executor = ScenarioExecutor(arm, tool_mcps, perception, vision_fn=_vision_servo_fn)  # type: ignore[arg-type]
+
     session.deps = OrchestratorDeps(
         robotic_deps=RoboticAgentDeps(arm, tool_mcps, executor, perception, session.cfg),  # type: ignore[arg-type]
         cfg=session.cfg,
         config_deps=config_deps,
+        vision_deps=vision_deps,
     )
 
 
