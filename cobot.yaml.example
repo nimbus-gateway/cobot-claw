@@ -21,11 +21,13 @@ agents:
   safety:
     model: qwen2.5:7b
     poll_interval_sec: 1.0
-    alert_threshold: WARNING
-  perception:
-    enabled: false
-    endpoint: null
-    model: qwen2.5:14b
+    alert_threshold: WARNING   # WARNING | BLOCKED
+  vision:
+    model: qwen2.5:14b         # or claude-haiku-4-5-20251001, gemini-2.0-flash
+    google_api_key: ""         # required for Gemini ER detection — or set GOOGLE_API_KEY env var
+    ik_solver: robot           # "robot" = use robot MCP get_inverse_kin | "local" = analytical solver
+    pick_x_offset_m: 0.0       # tune to correct systematic grasp X error (metres, positive = away from robot base)
+    pick_y_offset_m: 0.0       # tune to correct systematic grasp Y error (metres, positive = robot's right)
 
 scenarios:
   store_path: ./cobot/scenarios/store
