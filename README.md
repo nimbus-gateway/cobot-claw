@@ -384,4 +384,8 @@ Full implementation details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 
 ## Demo
 
-![Stage 0 demo](demo/stage0.gif)
+![Move and Home](demo/stages/stage_move_and_home.gif)
+
+![Point to Object](demo/stages/stage_point_to_object.gif)
+
+![Pick and Drop](demo/stages/stage_pick_and_drop.gif)
