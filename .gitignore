@@ -60,3 +60,5 @@ logs/
 install/
 build/
 log/
+demo/stages/stage_pick_and_drop.gif
+demo/stages/stage_point_to_object.gif
