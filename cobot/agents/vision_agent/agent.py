@@ -24,6 +24,7 @@ from cobot.agents.vision_agent.gemini import gemini_locate
 from cobot.agents.vision_agent.kinematics import APPROACH_Z_OFFSET
 
 
+
 @dataclass
 class VisionAgentDeps:
     cfg: CobotConfig
@@ -428,7 +429,11 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
                 ymin2, xmin2, ymax2, xmax2 = box2
                 x1_2 = int(xmin2/1000*w2); y1_2 = int(ymin2/1000*h2)
                 x2_2 = int(xmax2/1000*w2); y2_2 = int(ymax2/1000*h2)
-                d2   = depth_at_box(depth2, ds2, x1_2, y1_2, x2_2, y2_2)
+                # Horizontal center of box → centers gripper over object
+                # Top third of box → samples depth from top surface, not object body
+                px2 = (x1_2 + x2_2) // 2
+                py2 = y1_2 + (y2_2 - y1_2) // 3
+                d2  = depth_at_box(depth2, ds2, x1_2, y1_2, x2_2, y1_2 + (y2_2 - y1_2) // 2)
                 if d2 < 0.05:
                     d2 = depth_at_pixel(depth2, ci2, px2, py2, ds2)
             else:
@@ -437,22 +442,36 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
                 xyz2   = pixel_to_camera_xyz(ci2, px2, py2, d2)
                 base2  = camera_to_base(xyz2, T)
                 bx, by, bz = base2["x"], base2["y"], base2["z"]
+                x_off = ctx.deps.cfg.agents.vision.pick_x_offset_m
+                y_off = ctx.deps.cfg.agents.vision.pick_y_offset_m
+                print(f"  [pick] applying offsets: x={x_off:+.4f}  y={y_off:+.4f}")
+                bx += x_off
+                by += y_off
                 grasp_z = round(bz + PICK_Z_OFFSET, 4)
                 lift_z  = round(bz + lift_height_m, 4)
-                print(f"  [pick] refined position: ({bx:.3f},{by:.3f},{bz:.3f})")
+                print(f"  [pick] refined position (after offset): ({bx:.3f},{by:.3f},{bz:.3f})")
             else:
                 print("  [pick] re-detect depth invalid, using initial estimate")
         else:
             print("  [pick] re-detect failed, using initial estimate")
 
-        j_grasp = get_joints_for_pose("grasp", bx, by, grasp_z, j_approach, arm_mcp_url=mcp_url)
+        # Grasp and lift use local analytical IK for precision — robot IK is only
+        # used for the large approach transit where exact accuracy is less critical.
+        refined_approach_z = round(bz + APPROACH_Z_OFFSET, 4)
+        j_approach2 = get_joints_for_pose("approach2", bx, by, refined_approach_z, j_approach, arm_mcp_url=None)
+        # Seed grasp/lift from j_approach2 — that is where the arm will actually be sitting.
+        # Using j_approach here caused the IK to find solutions far from the refined pose.
+        grasp_seed = j_approach2 if j_approach2 is not None else j_approach
+        j_grasp = get_joints_for_pose("grasp", bx, by, grasp_z, grasp_seed, arm_mcp_url=None)
         if j_grasp is None:
             return {"success": False, "error": f"IK failed for grasp ({bx:.3f},{by:.3f},{grasp_z:.3f})"}
-        j_lift  = get_joints_for_pose("lift",  bx, by, lift_z,  j_approach, arm_mcp_url=mcp_url)
+        j_lift  = get_joints_for_pose("lift",  bx, by, lift_z,  grasp_seed, arm_mcp_url=None)
         if j_lift is None:
             return {"success": False, "error": f"IK failed for lift ({bx:.3f},{by:.3f},{lift_z:.3f})"}
 
-        # 5. Descend, grip, lift
+        # 5. Re-approach at refined XY (corrects lateral error), then descend straight down
+        if j_approach2 is not None:
+            await arm.call_tool("move_joints", {"joints": j_approach2, "speed": 0.2, "accel": 0.4})
         await arm.call_tool("move_joints", {"joints": j_grasp, "speed": 0.1, "accel": 0.2})
 
         if gripper:
@@ -527,7 +546,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         hover_z  = round(bz + hover_height_m, 4)
 
         mcp_url  = ctx.deps.arm_mcp_url
-        j_hover  = get_joints_for_pose("hover", bx, by, hover_z, _PICK_SEED, arm_mcp_url=mcp_url)
+        j_hover  = get_joints_for_pose("hover", bx, by, hover_z, _PICK_SEED, arm_mcp_url=None)
         if j_hover is None:
             return {"success": False, "error": f"IK failed for hover ({bx:.3f},{by:.3f},{hover_z:.3f})"}
 
