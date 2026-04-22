@@ -379,3 +379,9 @@ Full implementation details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 | RAG (Phase 6) | LlamaIndex + ChromaDB |
 | Logging | structlog |
 | Tests | pytest + pytest-asyncio |
+
+---
+
+## Demo
+
+![Stage 0 demo](demo/stage0.gif)
