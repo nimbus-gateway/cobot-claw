@@ -36,6 +36,8 @@ def generate_scenario(
     save_debug_image: bool = True,
     gemini_client=None,
     cfg=None,
+    place_xyz: dict | None = None,
+    arm_mcp_url: str | None = None,
 ) -> dict:
     """
     Locate objects with Gemini ER + RealSense, compute joint angles with local
@@ -49,6 +51,9 @@ def generate_scenario(
         calib_file:      Path to calibration.json.
         scenario_store:  Directory to write the scenario YAML.
         save_debug_image: Write <name>_vision.jpg with annotated detections.
+        place_xyz:       If provided, use these {x, y, z} coords directly for
+                         the place target — skips Gemini detection for place.
+                         Useful for "lift" tasks where place = pick + z offset.
 
     Returns dict with keys: success, scenario_name, out_path, pick_base,
     place_base, message.
@@ -75,10 +80,18 @@ def generate_scenario(
     if not pick_det:
         return {"success": False, "message": f"Could not locate '{pick}'"}
 
-    print(f"[vision] Locating: '{place}'")
-    place_det = gemini_locate(gemini, encode_jpeg(color), place)
-    if not place_det:
-        return {"success": False, "message": f"Could not locate '{place}'"}
+    if place_xyz is not None:
+        # Place coordinates given directly — no Gemini detection needed
+        place_base = {"x": round(float(place_xyz["x"]), 4),
+                      "y": round(float(place_xyz["y"]), 4),
+                      "z": round(float(place_xyz["z"]), 4)}
+        place_px, place_py, place_d = None, None, 0.0
+        print(f"[vision] Place: using provided xyz {place_base}")
+    else:
+        print(f"[vision] Locating: '{place}'")
+        place_det = gemini_locate(gemini, encode_jpeg(color), place)
+        if not place_det:
+            return {"success": False, "message": f"Could not locate '{place}'"}
 
     def det_to_base(det: dict, fallback_depth_m: float | None = None):
         ny, nx = det["point"]
@@ -106,19 +119,21 @@ def generate_scenario(
         return camera_to_base(xyz, T_base_cam), px, py, d_m
 
     pick_base,  pick_px,  pick_py,  pick_d  = det_to_base(pick_det)
-    place_base, place_px, place_py, place_d = det_to_base(place_det, fallback_depth_m=pick_d)
+    if place_xyz is None:
+        place_base, place_px, place_py, place_d = det_to_base(place_det, fallback_depth_m=pick_d)
 
     print(f"\n  Pick  '{pick}':  depth={pick_d:.3f}m  base={pick_base}")
-    print(f"  Place '{place}': depth={place_d:.3f}m  base={place_base}")
+    print(f"  Place '{place}': base={place_base}")
 
     if save_debug_image:
         ann = color.copy()
         cv2.circle(ann, (pick_px, pick_py), 12, (0, 255, 0), -1)
         cv2.putText(ann, f"PICK {pick_d:.2f}m", (pick_px + 12, pick_py),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.circle(ann, (place_px, place_py), 12, (0, 0, 255), -1)
-        cv2.putText(ann, f"PLACE {place_d:.2f}m", (place_px + 12, place_py),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        if place_px is not None:
+            cv2.circle(ann, (place_px, place_py), 12, (0, 0, 255), -1)
+            cv2.putText(ann, f"PLACE {place_d:.2f}m", (place_px + 12, place_py),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         cv2.imwrite(f"{name}_vision.jpg", ann)
         print(f"  Saved {name}_vision.jpg")
 
@@ -135,7 +150,7 @@ def generate_scenario(
 
     def ik(label: str, x: float, y: float, z: float,
            q_seed: list[float] | None = None) -> list[float]:
-        j = get_joints_for_pose(label, x, y, z, q_seed)
+        j = get_joints_for_pose(label, x, y, z, q_seed, arm_mcp_url=arm_mcp_url)
         if j is None:
             raise RuntimeError(f"IK failed for '{label}' at ({x:.3f},{y:.3f},{z:.3f})")
         return j

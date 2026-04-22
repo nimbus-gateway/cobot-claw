@@ -29,6 +29,8 @@ class VisionAgentDeps:
     cfg: CobotConfig
     calib_file: str = field(default_factory=lambda: CALIB_FILE)
     gemini_client: genai.Client | None = None
+    arm_mcp: object | None = None       # MCPClient — injected at session startup
+    gripper_mcp: object | None = None   # MCPClient — injected at session startup
     _T_base_cam: np.ndarray | None = field(default=None, repr=False)
     # Cached frame from the last capture_scene call — reused by locate_object
     _frame: tuple | None = field(default=None, repr=False)   # (color, depth, ci, ds)
@@ -38,6 +40,14 @@ class VisionAgentDeps:
     debug_image_path: str = field(
         default_factory=lambda: str(Path(__file__).parent / "vision_scene.jpg")
     )
+
+    @property
+    def arm_mcp_url(self) -> str | None:
+        """Return arm MCP URL if ik_solver == 'robot', else None (use local IK)."""
+        solver = getattr(self.cfg.agents.vision, "ik_solver", "local")
+        if solver == "robot":
+            return self.cfg.fleet[0].arm_mcp_url
+        return None
 
     def __post_init__(self):
         if self.gemini_client is None:
@@ -123,11 +133,14 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         system_prompt=(
             "You are the Vision Agent for a UR3e robot pick-and-place cell.\n"
             "You have direct access to a RealSense D455 camera and Gemini ER.\n\n"
-            "Workflow for a pick/place request:\n"
-            "1. Call capture_scene() to get a fresh camera frame.\n"
-            "2. Call locate_object(description) to find the target in 3D.\n"
-            "3. Return position_base_m (robot base frame) and approach_pose_m.\n\n"
-            "For workspace safety checks call check_workspace_clear().\n"
+            "Tool selection guide:\n"
+            "- User says 'pick', 'grab', 'lift', 'get' an object → call pick_object(). "
+            "This detects the object, computes IK, and moves the arm directly. No YAML file.\n"
+            "- User says 'point to', 'show me', 'indicate', 'hover over' an object → call point_to_object(). "
+            "Moves the gripper above the object without picking it.\n"
+            "- User says 'create a scenario' or 'save a pick-and-place' → call create_pick_scenario() or create_lift_scenario().\n"
+            "- User says 'where is X' or 'find X' → call capture_scene() then locate_object().\n"
+            "- User says 'is workspace clear' → call check_workspace_clear().\n\n"
             "Return a VisionAgentResult with all relevant fields populated."
         ),
     )
@@ -243,8 +256,291 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
             calib_file=ctx.deps.calib_file,
             gemini_client=ctx.deps.gemini_client,
             cfg=ctx.deps.cfg,
+            arm_mcp_url=ctx.deps.arm_mcp_url,
         )
         return result
+
+    @agent.tool
+    async def create_lift_scenario(
+        ctx: RunContext[VisionAgentDeps],
+        pick_description: str,
+        lift_height_m: float = 0.15,
+        scenario_name: str = "vision_lift",
+    ) -> dict:
+        """
+        Generate a scenario that picks an object and lifts it straight up.
+        Use this when the user wants to pick/lift/grab an object without moving
+        it to a different location.
+
+        Args:
+            pick_description: Natural-language description of the object to pick,
+                              e.g. "bottle on the right side of the table"
+            lift_height_m:    How high to lift above the pick position (default 0.15m).
+            scenario_name:    Filename for the scenario (without .yaml).
+        """
+        from cobot.agents.vision_agent.scenario import generate_scenario
+        from cobot.agents.vision_agent.camera import (
+            capture_realsense, encode_jpeg, depth_at_pixel, depth_at_box,
+            pixel_to_camera_xyz, camera_to_base,
+        )
+        from cobot.agents.vision_agent.gemini import gemini_locate
+
+        if ctx.deps.gemini_client is None:
+            return {"success": False, "error": "GOOGLE_API_KEY not set"}
+
+        T = ctx.deps.get_T_base_cam()
+        color, depth, ci, ds = capture_realsense()
+        h, w = color.shape[:2]
+
+        det = gemini_locate(ctx.deps.gemini_client, encode_jpeg(color), pick_description)
+        if det is None:
+            return {"success": False, "error": f"Could not locate '{pick_description}'"}
+
+        ny, nx = det["point"]
+        px = int(nx / 1000 * w)
+        py = int(ny / 1000 * h)
+        box = det.get("box_2d")
+        if box:
+            ymin, xmin, ymax, xmax = box
+            x1 = int(xmin / 1000 * w); y1 = int(ymin / 1000 * h)
+            x2 = int(xmax / 1000 * w); y2 = int(ymax / 1000 * h)
+            d_m = depth_at_box(depth, ds, x1, y1, x2, y2)
+            if d_m < 0.05:
+                d_m = depth_at_pixel(depth, ci, px, py, ds)
+        else:
+            d_m = depth_at_pixel(depth, ci, px, py, ds)
+
+        if d_m < 0.05:
+            return {"success": False, "error": "No depth reading at detected pixel"}
+
+        xyz = pixel_to_camera_xyz(ci, px, py, d_m)
+        pick_base = camera_to_base(xyz, T)
+
+        place_xyz = {
+            "x": pick_base["x"],
+            "y": pick_base["y"],
+            "z": round(pick_base["z"] + lift_height_m, 4),
+        }
+
+        result = generate_scenario(
+            pick=pick_description,
+            place=f"lift {lift_height_m}m above pick",
+            name=scenario_name,
+            calib_file=ctx.deps.calib_file,
+            gemini_client=ctx.deps.gemini_client,
+            cfg=ctx.deps.cfg,
+            place_xyz=place_xyz,
+            arm_mcp_url=ctx.deps.arm_mcp_url,
+        )
+        return result
+
+    @agent.tool
+    async def pick_object(
+        ctx: RunContext[VisionAgentDeps],
+        description: str,
+        lift_height_m: float = 0.15,
+    ) -> dict:
+        """
+        Detect an object with Gemini ER + RealSense, compute IK, and execute a
+        pick-and-lift motion directly — no YAML scenario file is created.
+
+        Use this when the user says "pick", "grab", "lift", or "get" an object.
+
+        Steps: home → open gripper → approach → descend → close gripper → lift.
+
+        Args:
+            description:   What to pick, e.g. "bottle on the table".
+            lift_height_m: How high to lift above the pick z (default 0.15 m).
+        """
+        from cobot.agents.vision_agent.camera import (
+            capture_realsense, encode_jpeg, depth_at_pixel, depth_at_box,
+            pixel_to_camera_xyz, camera_to_base,
+        )
+        from cobot.agents.vision_agent.gemini import gemini_locate
+        from cobot.agents.vision_agent.kinematics import (
+            get_joints_for_pose, APPROACH_Z_OFFSET, PICK_Z_OFFSET, _PICK_SEED,
+        )
+
+        if ctx.deps.gemini_client is None:
+            return {"success": False, "error": "GOOGLE_API_KEY not set"}
+        if ctx.deps.arm_mcp is None:
+            return {"success": False, "error": "arm_mcp not wired — cannot move robot"}
+
+        arm     = ctx.deps.arm_mcp
+        gripper = ctx.deps.gripper_mcp
+        T       = ctx.deps.get_T_base_cam()
+
+        # 1. Detect object
+        color, depth, ci, ds = capture_realsense()
+        h, w = color.shape[:2]
+        det = gemini_locate(ctx.deps.gemini_client, encode_jpeg(color), description)
+        if det is None:
+            return {"success": False, "error": f"Could not locate '{description}'"}
+
+        ny, nx = det["point"]
+        px = int(nx / 1000 * w); py = int(ny / 1000 * h)
+        box = det.get("box_2d")
+        if box:
+            ymin, xmin, ymax, xmax = box
+            x1 = int(xmin/1000*w); y1 = int(ymin/1000*h)
+            x2 = int(xmax/1000*w); y2 = int(ymax/1000*h)
+            d_m = depth_at_box(depth, ds, x1, y1, x2, y2)
+            if d_m < 0.05:
+                d_m = depth_at_pixel(depth, ci, px, py, ds)
+        else:
+            d_m = depth_at_pixel(depth, ci, px, py, ds)
+
+        if d_m < 0.05:
+            return {"success": False, "error": "No depth reading at detected pixel"}
+
+        xyz      = pixel_to_camera_xyz(ci, px, py, d_m)
+        base_pos = camera_to_base(xyz, T)
+        bx, by, bz = base_pos["x"], base_pos["y"], base_pos["z"]
+
+        approach_z = round(bz + APPROACH_Z_OFFSET, 4)
+        grasp_z    = round(bz + PICK_Z_OFFSET,     4)
+        lift_z     = round(bz + lift_height_m,     4)
+
+        # 2. IK for approach only (coarse estimate)
+        mcp_url = ctx.deps.arm_mcp_url
+        j_approach = get_joints_for_pose("approach", bx, by, approach_z, _PICK_SEED, arm_mcp_url=mcp_url)
+        if j_approach is None:
+            return {"success": False, "error": f"IK failed for approach ({bx:.3f},{by:.3f},{approach_z:.3f})"}
+
+        # 3. Move home + open gripper, then move to approach
+        await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
+
+        if gripper:
+            await gripper.call_tool("move", {"position": 0, "speed": 100, "force": 100})
+
+        await arm.call_tool("move_joints", {"joints": j_approach, "speed": 0.3, "accel": 0.5})
+
+        # 4. Re-detect from approach position for accurate grasp/lift IK
+        print("  [pick] re-detecting from approach position …")
+        color2, depth2, ci2, ds2 = capture_realsense()
+        h2, w2 = color2.shape[:2]
+        det2 = gemini_locate(ctx.deps.gemini_client, encode_jpeg(color2), description)
+        if det2 is not None:
+            ny2, nx2 = det2["point"]
+            px2 = int(nx2 / 1000 * w2); py2 = int(ny2 / 1000 * h2)
+            box2 = det2.get("box_2d")
+            if box2:
+                ymin2, xmin2, ymax2, xmax2 = box2
+                x1_2 = int(xmin2/1000*w2); y1_2 = int(ymin2/1000*h2)
+                x2_2 = int(xmax2/1000*w2); y2_2 = int(ymax2/1000*h2)
+                d2   = depth_at_box(depth2, ds2, x1_2, y1_2, x2_2, y2_2)
+                if d2 < 0.05:
+                    d2 = depth_at_pixel(depth2, ci2, px2, py2, ds2)
+            else:
+                d2 = depth_at_pixel(depth2, ci2, px2, py2, ds2)
+            if d2 >= 0.05:
+                xyz2   = pixel_to_camera_xyz(ci2, px2, py2, d2)
+                base2  = camera_to_base(xyz2, T)
+                bx, by, bz = base2["x"], base2["y"], base2["z"]
+                grasp_z = round(bz + PICK_Z_OFFSET, 4)
+                lift_z  = round(bz + lift_height_m, 4)
+                print(f"  [pick] refined position: ({bx:.3f},{by:.3f},{bz:.3f})")
+            else:
+                print("  [pick] re-detect depth invalid, using initial estimate")
+        else:
+            print("  [pick] re-detect failed, using initial estimate")
+
+        j_grasp = get_joints_for_pose("grasp", bx, by, grasp_z, j_approach, arm_mcp_url=mcp_url)
+        if j_grasp is None:
+            return {"success": False, "error": f"IK failed for grasp ({bx:.3f},{by:.3f},{grasp_z:.3f})"}
+        j_lift  = get_joints_for_pose("lift",  bx, by, lift_z,  j_approach, arm_mcp_url=mcp_url)
+        if j_lift is None:
+            return {"success": False, "error": f"IK failed for lift ({bx:.3f},{by:.3f},{lift_z:.3f})"}
+
+        # 5. Descend, grip, lift
+        await arm.call_tool("move_joints", {"joints": j_grasp, "speed": 0.1, "accel": 0.2})
+
+        if gripper:
+            await gripper.call_tool("move", {"position": 255, "speed": 100, "force": 150})
+
+        await arm.call_tool("move_joints", {"joints": j_lift, "speed": 0.2, "accel": 0.4})
+
+        return {
+            "success":     True,
+            "label":       det.get("label", description),
+            "position_m":  {"x": bx, "y": by, "z": bz},
+            "depth_m":     round(d_m, 4),
+            "summary":     f"Picked '{det.get('label', description)}' at ({bx:.3f},{by:.3f},{bz:.3f}), lifted to z={lift_z:.3f}",
+        }
+
+    @agent.tool
+    async def point_to_object(
+        ctx: RunContext[VisionAgentDeps],
+        description: str,
+        hover_height_m: float = 0.12,
+    ) -> dict:
+        """
+        Detect an object and move the gripper to hover directly above it — does NOT pick or grip.
+
+        Use when the user says "point to", "show me", "indicate", or "where is" combined with
+        a physical move request.
+
+        Args:
+            description:    What to point at, e.g. "bottle", "red cup".
+            hover_height_m: Height above the detected object surface to hover (default 0.12 m).
+        """
+        from cobot.agents.vision_agent.camera import (
+            capture_realsense, encode_jpeg, depth_at_pixel, depth_at_box,
+            pixel_to_camera_xyz, camera_to_base,
+        )
+        from cobot.agents.vision_agent.gemini import gemini_locate
+        from cobot.agents.vision_agent.kinematics import get_joints_for_pose, _PICK_SEED
+
+        if ctx.deps.gemini_client is None:
+            return {"success": False, "error": "GOOGLE_API_KEY not set"}
+        if ctx.deps.arm_mcp is None:
+            return {"success": False, "error": "arm_mcp not wired — cannot move robot"}
+
+        arm = ctx.deps.arm_mcp
+        T   = ctx.deps.get_T_base_cam()
+
+        color, depth, ci, ds = capture_realsense()
+        h, w = color.shape[:2]
+        det = gemini_locate(ctx.deps.gemini_client, encode_jpeg(color), description)
+        if det is None:
+            return {"success": False, "error": f"Could not locate '{description}'"}
+
+        ny, nx = det["point"]
+        px = int(nx / 1000 * w); py = int(ny / 1000 * h)
+        box = det.get("box_2d")
+        if box:
+            ymin, xmin, ymax, xmax = box
+            x1 = int(xmin/1000*w); y1 = int(ymin/1000*h)
+            x2 = int(xmax/1000*w); y2 = int(ymax/1000*h)
+            d_m = depth_at_box(depth, ds, x1, y1, x2, y2)
+            if d_m < 0.05:
+                d_m = depth_at_pixel(depth, ci, px, py, ds)
+        else:
+            d_m = depth_at_pixel(depth, ci, px, py, ds)
+
+        if d_m < 0.05:
+            return {"success": False, "error": "No depth reading at detected pixel"}
+
+        xyz      = pixel_to_camera_xyz(ci, px, py, d_m)
+        base_pos = camera_to_base(xyz, T)
+        bx, by, bz = base_pos["x"], base_pos["y"], base_pos["z"]
+        hover_z  = round(bz + hover_height_m, 4)
+
+        mcp_url  = ctx.deps.arm_mcp_url
+        j_hover  = get_joints_for_pose("hover", bx, by, hover_z, _PICK_SEED, arm_mcp_url=mcp_url)
+        if j_hover is None:
+            return {"success": False, "error": f"IK failed for hover ({bx:.3f},{by:.3f},{hover_z:.3f})"}
+
+        await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
+        await arm.call_tool("move_joints", {"joints": j_hover, "speed": 0.3, "accel": 0.5})
+
+        return {
+            "success":    True,
+            "label":      det.get("label", description),
+            "position_m": base_pos,
+            "hover_z":    hover_z,
+            "summary":    f"Pointing at '{det.get('label', description)}' at ({bx:.3f},{by:.3f},{bz:.3f}), hovering at z={hover_z:.3f}",
+        }
 
     @agent.tool
     async def check_workspace_clear(ctx: RunContext[VisionAgentDeps]) -> dict:

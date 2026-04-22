@@ -244,7 +244,8 @@ class ScenarioExecutor:
         x, y = pos["x"], pos["y"]
         logger.info("executor.visual_servo", corrected_xy=(round(x, 4), round(y, 4)))
 
-        j_approach = get_joints_for_pose("servo_approach", x, y, step.approach_z)
+        j_approach = get_joints_for_pose("servo_approach", x, y, step.approach_z,
+                                          q_seed=step.fallback_joints)
         if j_approach is None:
             logger.warning("executor.visual_servo_fallback", reason="IK failed for approach")
             return await self.arm.call_tool("move_joints", {

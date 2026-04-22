@@ -219,7 +219,13 @@ class RTDEReader:
     Thread-safe; self-reconnects on drop.
     """
 
-    VARIABLES = ["actual_q", "actual_TCP_pose"]   # 6 + 6 doubles = 96 bytes payload
+    # actual_q[6] + actual_TCP_pose[6] + output_double_register_0..5[6] = 18 doubles
+    VARIABLES = [
+        "actual_q", "actual_TCP_pose",
+        "output_double_register_0", "output_double_register_1",
+        "output_double_register_2", "output_double_register_3",
+        "output_double_register_4", "output_double_register_5",
+    ]
 
     def __init__(self, robot_ip: str, frequency: float = 10.0) -> None:
         self._ip = robot_ip
@@ -227,6 +233,7 @@ class RTDEReader:
         self._lock = threading.Lock()
         self._joints: list[float] | None = None
         self._tcp: list[float] | None = None
+        self._registers: list[float] = [0.0] * 6   # output_double_register_0..5
         self._running = False
         self._thread: threading.Thread | None = None
 
@@ -247,6 +254,11 @@ class RTDEReader:
     def tcp(self) -> list[float] | None:
         with self._lock:
             return list(self._tcp) if self._tcp is not None else None
+
+    @property
+    def registers(self) -> list[float]:
+        with self._lock:
+            return list(self._registers)
 
     @property
     def connected(self) -> bool:
@@ -306,13 +318,14 @@ class RTDEReader:
                 ptype, payload = _rtde_recv(sock)
                 if ptype != _RTDE_DATA_PACKAGE:
                     continue
-                # payload: 1 byte recipe_id + 12 doubles (actual_q[6] + actual_TCP_pose[6])
-                if len(payload) < 1 + 12 * 8:
+                # payload: 1 byte recipe_id + 18 doubles (actual_q + actual_TCP_pose + 6 registers)
+                if len(payload) < 1 + 18 * 8:
                     continue
-                values = struct.unpack_from(">12d", payload, 1)
+                values = struct.unpack_from(">18d", payload, 1)
                 with self._lock:
-                    self._joints = list(values[:6])
-                    self._tcp    = list(values[6:])
+                    self._joints    = list(values[:6])
+                    self._tcp       = list(values[6:12])
+                    self._registers = list(values[12:18])
 
         finally:
             sock.close()
@@ -1044,6 +1057,85 @@ def move_tcp_pose(
         }
     except Exception as e:
         return {"ok": False, "message": str(e)}
+
+
+@mcp.tool()
+@safe_tool
+def get_inverse_kin(
+    x: float, y: float, z: float,
+    rx: float = 0.0, ry: float = 3.14159, rz: float = 0.0,
+    q_near: list[float] | None = None,
+) -> dict[str, Any]:
+    """
+    Ask the UR3e controller to solve IK for a TCP pose without moving.
+
+    Sends URScript to port 30002 that calls get_inverse_kin() and writes each
+    joint to output_double_register_0..5. Reads those registers back via a
+    one-shot RTDE subscription — no motion, no parsing of binary primary packets.
+
+    x, y, z    – target TCP position in robot base frame (metres)
+    rx, ry, rz – rotation vector (axis * angle). Default [0, π, 0] = tool down.
+    q_near     – 6-joint seed for configuration preference. Defaults to current
+                 joint state so the solver picks the nearest configuration.
+    """
+    import socket as _socket
+
+    # Use current joints as seed if none provided
+    if q_near is None:
+        joints_now: list[float] | None = None
+        if rtde is not None and rtde.connected:
+            joints_now = rtde.joints
+        if joints_now is None and robot is not None:
+            joints_now = robot.get_current_joints()
+        q_near = joints_now or [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+
+    q_str = ",".join(f"{v:.6f}" for v in q_near)
+
+    # URScript: compute IK, write each joint to an output double register
+    script = (
+        "def get_ik_result():\n"
+        f"  local pose = p[{x:.6f},{y:.6f},{z:.6f},{rx:.6f},{ry:.6f},{rz:.6f}]\n"
+        f"  local qn = [{q_str}]\n"
+        "  local q = get_inverse_kin(pose, qnear=qn)\n"
+        "  write_output_float_register(0, q[0])\n"
+        "  write_output_float_register(1, q[1])\n"
+        "  write_output_float_register(2, q[2])\n"
+        "  write_output_float_register(3, q[3])\n"
+        "  write_output_float_register(4, q[4])\n"
+        "  write_output_float_register(5, q[5])\n"
+        "end\n"
+        "get_ik_result()\n"
+    )
+
+    if rtde is None or not rtde.connected:
+        return {"ok": False, "message": "RTDE not connected"}
+
+    # Send script via port 30002
+    try:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.settimeout(5.0)
+        sock.connect((ROBOT_IP, 30002))
+        sock.sendall(script.encode("utf-8"))
+        sock.close()
+    except Exception as e:
+        return {"ok": False, "message": f"Failed to send script: {e}"}
+
+    # Wait for URScript to execute and registers to update via the running RTDEReader
+    time.sleep(0.5)
+    result_joints = rtde.registers
+
+    # Detect all-zero result (IK failed / unreachable)
+    if all(abs(j) < 1e-9 for j in result_joints):
+        return {"ok": False, "message": "Robot IK returned all zeros — pose likely unreachable"}
+
+    wrapped = [round(((j + math.pi) % (2 * math.pi)) - math.pi, 6) for j in result_joints]
+    return {
+        "ok": True,
+        "joints_rad": wrapped,
+        "joints_deg": [round(math.degrees(j), 3) for j in wrapped],
+        "tcp_pose": {"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz},
+        "note": "Solved by robot controller's get_inverse_kin(). Use move_joints to execute.",
+    }
 
 
 @mcp.tool()

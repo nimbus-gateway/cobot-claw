@@ -106,7 +106,11 @@ async def _connect_session(session: CobotSession) -> None:
         cfg=session.cfg,
     )
 
-    vision_deps = VisionAgentDeps(cfg=session.cfg)
+    vision_deps = VisionAgentDeps(
+        cfg=session.cfg,
+        arm_mcp=arm,
+        gripper_mcp=tool_mcps.get("gripper"),
+    )
     session.mcp_status["vision"] = True
 
     async def _vision_servo_fn(description: str) -> dict | None:

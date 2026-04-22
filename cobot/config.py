@@ -38,6 +38,7 @@ class SafetyAgentConfig(AgentModelConfig):
 
 class VisionAgentConfig(AgentModelConfig):
     google_api_key: str = ""   # leave blank to use GOOGLE_API_KEY env var
+    ik_solver: str = "robot"   # "robot" = robot MCP get_inverse_kin, "local" = analytical solver
 
 
 class AgentsConfig(BaseModel):
