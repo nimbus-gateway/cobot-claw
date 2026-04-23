@@ -26,8 +26,9 @@ Under the hood, cobot-claw is a **multi-agent AI system**. Think of it as a smal
 
 - **Orchestrator** — the manager. Reads your request and decides which specialist to hand it to. Never calls robot hardware directly.
 - **Robotic Agent** — the operator. Handles all robot interactions — status queries, movements, tool control, and scenario execution. Discovers attached tools dynamically so no code changes are needed when hardware changes.
+- **Vision Agent** — the eyes. Uses an Intel RealSense camera and a vision LLM (Gemini ER or any OpenAI-compatible vision endpoint) to locate objects in 3D space, compute inverse kinematics, and execute pick, pick-and-place, and point-to operations directly — no scenario YAML needed.
 - **Safety Monitor** — the supervisor. Watches the robot continuously and intervenes if anything looks dangerous.
-- **Config Agent** — the technician. Answers questions from robot manuals and handles setup tasks *(coming in Phase 6)*.
+- **Config Agent** — the technician. Answers questions from robot manuals and handles teach-by-demo scenario recording.
 
 Each agent is powered by a large language model (LLM). cobot-claw works with **local models** running on your own hardware via [Ollama](https://ollama.com) — keeping your data private — as well as **cloud APIs** (OpenAI, Anthropic) when you need more capability. Switching between them is a one-line change in the config file.
 
@@ -89,12 +90,17 @@ fleet:
 agents:
   orchestrator:
     model: qwen2.5:72b      # or gpt-4o, claude-sonnet-4-6, etc.
-  scenario:
-    model: qwen2.5:14b
   config:
     model: qwen2.5:14b
   safety:
     model: qwen2.5:7b
+  vision:
+    model: gemini-robotics-er-1.6-preview
+    detector: gemini              # "gemini" | "openai_vision"
+    google_api_key: ""            # or set GOOGLE_API_KEY env var
+    ik_solver: robot              # "robot" = use arm MCP IK | "local" = analytical
+    pick_x_offset_m: 0.0          # tune to correct systematic grasp X error
+    pick_y_offset_m: 0.0          # tune to correct systematic grasp Y error
 ```
 
 ### Switching to OpenAI or Anthropic
@@ -157,6 +163,11 @@ cobot-claw run pick_place --dry-run  # preview steps without moving
 > is the gripper working?
 > what is the current robot state?
 > open the gripper slowly
+
+> pick the white block
+> pick the bottle and place it on the brown box
+> point to the red cup
+> what do you see on the table?
 ```
 
 The CLI shows an animated spinner while waiting for the LLM and while tool calls execute. Tool calls and results stream inline as the agent works.
@@ -188,10 +199,16 @@ cobot-claw/
 │   │   └── store/
 │   │       └── pick_place.yaml       # Example pick-and-place scenario
 │   ├── agents/
-│   │   ├── deps.py                   # RoboticAgentDeps, ConfigAgentDeps
+│   │   ├── deps.py                   # RoboticAgentDeps, ConfigAgentDeps, VisionAgentDeps
 │   │   ├── robotic_agent.py          # Robotic Agent (dynamic tool discovery)
 │   │   ├── config_agent.py           # Config Agent (RAG + teach mode)
-│   │   └── orchestrator.py           # Orchestrator Agent + OrchestratorDeps
+│   │   ├── orchestrator.py           # Orchestrator Agent + OrchestratorDeps
+│   │   └── vision_agent/
+│   │       ├── agent.py              # Vision Agent tools (pick, pick-and-place, point)
+│   │       ├── camera.py             # RealSense capture + depth utilities
+│   │       ├── detector.py           # VisionDetector protocol + Gemini/OpenAI backends
+│   │       ├── kinematics.py         # UR3e analytical IK + robot MCP IK with fallback
+│   │       └── scenario.py           # Vision-guided scenario YAML generator
 │   ├── cli/
 │   │   ├── app.py                    # Typer entry point (cobot-claw command)
 │   │   ├── repl.py                   # Interactive REPL loop + agent streaming
@@ -359,8 +376,8 @@ pytest -v
 | 4 | Robotic Agent + Config Agent + Orchestrator Agent | **Done** |
 | 5 | CLI — REPL, slash commands, streaming output | **Done** |
 | 6 | Config Agent RAG + `/teach` (real ChromaDB/LlamaIndex) | **Done** |
-| 7 | Safety Monitor | Future |
-| 8 | Perception Agent + sensor MCPs | Future |
+| 7 | Vision Agent — RealSense + Gemini ER + analytical IK + pick/place | **Done** |
+| 8 | Safety Monitor | Future |
 
 Full implementation details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 
@@ -376,7 +393,10 @@ Full implementation details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 | Config schema | Pydantic v2 |
 | Scenario schema | Pydantic v2 discriminated union |
 | CLI | Typer + Rich + prompt_toolkit |
-| RAG (Phase 6) | LlamaIndex + ChromaDB |
+| RAG | LlamaIndex + ChromaDB |
+| Vision / detection | Gemini Robotics ER · OpenAI-compatible vision endpoints |
+| Depth sensing | Intel RealSense (pyrealsense2) |
+| Robot kinematics | Closed-form analytical IK + UR controller MCP IK |
 | Logging | structlog |
 | Tests | pytest + pytest-asyncio |
 

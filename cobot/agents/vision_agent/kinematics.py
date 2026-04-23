@@ -20,7 +20,8 @@ import math
 import numpy as np
 
 APPROACH_Z_OFFSET = 0.12   # metres above object for pre-grasp approach
-PICK_Z_OFFSET     = 0.04   # metres above detected surface for grasp
+PICK_Z_OFFSET     = 0.02   # metres above detected surface for grasp
+LIFT_Z_OFFSET     = 0.20   # metres above object after grasping
 
 # DH parameters: (d, a, alpha) — theta is the joint variable
 _DH = [
@@ -183,6 +184,13 @@ def ur3e_ik(x: float, y: float, z: float,
     candidates.sort(key=lambda c: (c[0], c[1]))
     best = candidates[0][2]
     wrapped = [((j + _PI) % (2 * _PI)) - _PI for j in best]
+    # After normalising to [-π, π], nudge each joint ±2π toward the seed so
+    # the arm stays in the same wrist/elbow branch it was already in.
+    if q_seed:
+        for i in range(len(wrapped)):
+            for offset in (2 * _PI, -2 * _PI):
+                if abs(wrapped[i] + offset - q_seed[i]) < abs(wrapped[i] - q_seed[i]):
+                    wrapped[i] += offset
     return [round(j, 6) for j in wrapped]
 
 
@@ -246,13 +254,26 @@ def robot_ik(x: float, y: float, z: float,
     return ur3e_ik(x, y, z, q_seed)
 
 
+_ROBOT_IK_ERR_THRESHOLD = 0.050   # metres — robot IK results above this fall back to local
+
 def get_joints_for_pose(name: str, x: float, y: float, z: float,
                         q_seed: list[float] | None = None,
                         arm_mcp_url: str | None = None) -> list[float] | None:
-    """Solve IK for a named pose. Uses robot MCP if arm_mcp_url provided, else local."""
+    """Solve IK for a named pose. Uses robot MCP if arm_mcp_url provided, else local.
+    If robot IK error exceeds threshold, falls back to local analytical IK."""
     print(f"  {name}  ({x:.3f}, {y:.3f}, {z:.3f})")
     if arm_mcp_url:
         joints = robot_ik(x, y, z, arm_mcp_url, q_seed)
+        if joints:
+            T   = ur3e_fk(joints)
+            err = float(np.linalg.norm(T[:3, 3] - np.array([x, y, z])))
+            if err > _ROBOT_IK_ERR_THRESHOLD:
+                print(f"    [robot IK] err={err*1000:.1f}mm > threshold, falling back to local IK")
+                joints = ur3e_ik(x, y, z, q_seed)
+            else:
+                print(f"    [robot IK] joints={[round(j, 4) for j in joints]}  "
+                      f"err={err * 1000:.1f}mm  z_tool={T[:3, 2].round(3).tolist()}")
+                return joints
     else:
         joints = ur3e_ik(x, y, z, q_seed)
     if joints:

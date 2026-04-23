@@ -1,4 +1,4 @@
-"""Vision-guided scenario generator: Gemini ER + RealSense → move_joints YAML."""
+"""Vision-guided scenario generator: VisionDetector + RealSense → move_joints YAML."""
 
 from __future__ import annotations
 
@@ -8,14 +8,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 import yaml as _yaml
-from google import genai
 
 from cobot.agents.vision_agent.camera import (
     load_calibration, capture_realsense, encode_jpeg,
     depth_at_pixel, depth_at_box, pixel_to_camera_xyz, camera_to_base,
     CALIB_FILE,
 )
-from cobot.agents.vision_agent.gemini import gemini_locate
+from cobot.agents.vision_agent.detector import VisionDetector, make_detector
 from cobot.agents.vision_agent.kinematics import (
     ur3e_fk, get_joints_for_pose,
     APPROACH_Z_OFFSET, PICK_Z_OFFSET, _PICK_SEED,
@@ -34,7 +33,7 @@ def generate_scenario(
     calib_file: str = CALIB_FILE,
     scenario_store: Path = SCENARIO_STORE,
     save_debug_image: bool = True,
-    gemini_client=None,
+    detector: VisionDetector | None = None,
     cfg=None,
     place_xyz: dict | None = None,
     arm_mcp_url: str | None = None,
@@ -58,25 +57,24 @@ def generate_scenario(
     Returns dict with keys: success, scenario_name, out_path, pick_base,
     place_base, message.
     """
-    if gemini_client is None:
-        google_key = (getattr(getattr(cfg, "agents", None) and getattr(cfg.agents, "vision", None), "google_api_key", "") or
-                      os.environ.get("GOOGLE_API_KEY", "")) if cfg is not None else os.environ.get("GOOGLE_API_KEY", "")
-        if not google_key:
-            return {"success": False, "message": "google_api_key not set in cobot.yaml (agents.vision.google_api_key)"}
-        gemini_client = genai.Client(api_key=google_key)
+    if detector is None:
+        if cfg is None:
+            return {"success": False, "message": "detector or cfg required"}
+        detector = make_detector(cfg)
+        if detector is None:
+            return {"success": False, "message": "Vision detector not configured (check google_api_key or llm settings)"}
 
     print(f"\nGenerating scenario: pick '{pick}' → place '{place}'")
     print("=" * 60)
 
     T_base_cam = load_calibration(calib_file)
-    gemini     = gemini_client
 
     print("\n[vision] Capturing frame...")
     color, depth, ci, depth_scale = capture_realsense()
     h, w = color.shape[:2]
 
     print(f"[vision] Locating: '{pick}'")
-    pick_det = gemini_locate(gemini, encode_jpeg(color), pick)
+    pick_det = detector.locate(encode_jpeg(color), pick)
     if not pick_det:
         return {"success": False, "message": f"Could not locate '{pick}'"}
 
@@ -89,7 +87,7 @@ def generate_scenario(
         print(f"[vision] Place: using provided xyz {place_base}")
     else:
         print(f"[vision] Locating: '{place}'")
-        place_det = gemini_locate(gemini, encode_jpeg(color), place)
+        place_det = detector.locate(encode_jpeg(color), place)
         if not place_det:
             return {"success": False, "message": f"Could not locate '{place}'"}
 
