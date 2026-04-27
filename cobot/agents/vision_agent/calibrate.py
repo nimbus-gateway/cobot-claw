@@ -53,6 +53,7 @@ async def calibrate_handeye(
     calib_file: str = CALIB_FILE,
     check_only: bool = False,
     dry_run: bool = False,
+    arm_mcp_client=None,
 ) -> dict:
     """
     Run or verify hand-eye calibration.
@@ -61,28 +62,40 @@ async def calibrate_handeye(
     Gemini ER to locate the gripper tip, and SVD-solves T_base_cam.
 
     Args:
-        arm_mcp_url: Streamable-HTTP URL of the arm MCP server.
-        calib_file:  Path to calibration.json to read/update.
-        check_only:  If True, report errors without saving.
-        dry_run:     If True, skip robot movement (camera + Gemini only).
+        arm_mcp_url:    Streamable-HTTP URL of the arm MCP server (used when
+                        arm_mcp_client is None — standalone script mode).
+        calib_file:     Path to calibration.json to read/update.
+        check_only:     If True, report errors without saving.
+        dry_run:        If True, skip robot movement (camera + Gemini only).
+        arm_mcp_client: Pre-connected MCPClient (used from CLI /calibrate).
 
     Returns dict with keys: success, n_points, mean_err_mm, max_err_mm,
     T_base_cam, message.
     """
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamable_http_client
-
     google_key = os.environ.get("GOOGLE_API_KEY")
     if not google_key:
         return {"success": False, "message": "GOOGLE_API_KEY not set"}
 
     gemini = genai.Client(api_key=google_key)
 
-    async def call_mcp(tool: str, args: dict) -> dict:
-        async with streamable_http_client(arm_mcp_url) as (r, w, _):
-            async with ClientSession(r, w) as s:
-                await s.initialize()
-                result = await s.call_tool(tool, args)
+    if arm_mcp_client is not None:
+        # Called from CLI — reuse the existing MCPClient connection
+        async def call_mcp(tool: str, args: dict) -> dict:
+            return await arm_mcp_client.call_tool(tool, args)
+
+        return await _run_calibration(call_mcp, calib_file, check_only, dry_run, gemini)
+
+    # Standalone script mode — open a fresh MCP connection
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    async with streamable_http_client(arm_mcp_url) as (r, w, _):
+        async with ClientSession(r, w) as session:
+            await session.initialize()
+            print(f"[calib] Connected to arm MCP: {arm_mcp_url}")
+
+            async def call_mcp(tool: str, args: dict) -> dict:
+                result = await session.call_tool(tool, args)
                 if result.content and result.content[0].type == "text":
                     try:
                         return json.loads(result.content[0].text)
@@ -92,6 +105,11 @@ async def calibrate_handeye(
                     return dict(result.structuredContent)
                 return {"ok": False, "message": "empty response"}
 
+            return await _run_calibration(call_mcp, calib_file, check_only, dry_run, gemini)
+
+
+async def _run_calibration(call_mcp, calib_file: str, check_only: bool, dry_run: bool, gemini) -> dict:
+    """Core calibration logic — shared between CLI and standalone script modes."""
     with open(calib_file) as f:
         calib = json.load(f)
     T_old = np.array(calib["T_base_cam"])
@@ -200,3 +218,21 @@ async def calibrate_handeye(
         "T_base_cam":  T_new.tolist(),
         "message":     f"Calibration updated. Mean error {mean_err:.1f}mm.",
     }
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Hand-eye calibration for cobot-claw")
+    parser.add_argument("--arm-mcp-url", default=ARM_MCP_URL)
+    parser.add_argument("--check-only", action="store_true", help="Report errors without saving")
+    parser.add_argument("--dry-run",    action="store_true", help="Skip robot movement")
+    args = parser.parse_args()
+
+    result = asyncio.run(calibrate_handeye(
+        arm_mcp_url=args.arm_mcp_url,
+        check_only=args.check_only,
+        dry_run=args.dry_run,
+    ))
+    print(f"\nResult: {result['message']}")
+    if not result["success"]:
+        raise SystemExit(1)

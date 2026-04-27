@@ -117,13 +117,13 @@ def print_welcome(
     # ── Right panel ──────────────────────────────────────────────────────────
     _AGENT_DESCRIPTIONS = [
         ("orchestrator", cfg.agents.orchestrator.model,
-         "Routes commands, delegates to scenario or config agent"),
+         "Routes commands, delegates to specialist agents"),
         ("robotic",      cfg.agents.scenario.model,
          "All robot interactions — status, moves, tools, scenarios"),
-        ("safety",       cfg.agents.safety.model,
-         "Monitors for unsafe states and blocks dangerous moves"),
+        ("vision",       cfg.agents.vision.model,
+         "Processes 3D camera input for spatial perception and manipulation"),
         ("config",       cfg.agents.config.model,
-         "Manages configuration and manual queries  [dim](phase 6)[/dim]"),
+         "Manual Q&A, teach-by-demo, scenario authoring"),
     ]
 
     agents_table = Table(show_header=False, box=None, padding=(0, 2), show_edge=False)

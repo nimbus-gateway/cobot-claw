@@ -25,6 +25,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from cobot.cli.commands.teach import cmd_teach
 from cobot.cli.commands.scenario import cmd_run, cmd_scenarios
 from cobot.cli.commands.status import cmd_status
+from cobot.cli.commands.calibrate import cmd_calibrate
 from cobot.cli.completer import CobotCompleter
 from cobot.cli.renderer import (
     console,
@@ -134,6 +135,8 @@ _HELP_TEXT = """
   [cyan]/run[/cyan] [dim]<name>[/dim]          Execute a scenario
   [cyan]/run[/cyan] [dim]<name> --dry[/dim]    Preview steps without moving
   [cyan]/teach[/cyan] [dim][step][/dim]         Keyboard-jog joints, record waypoints + gripper actions
+  [cyan]/calibrate[/cyan]            Run hand-eye calibration (moves arm through 4 poses)
+  [cyan]/calibrate --check[/cyan]   Report current calibration error without saving
   [cyan]/ingest[/cyan] [dim][path][/dim]       Index robot manuals into RAG knowledge base
   [cyan]/reconnect[/cyan]           Reconnect to robot MCP servers
   [cyan]/clear[/cyan]               Clear the screen
@@ -169,6 +172,11 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
             else:
                 dry = "--dry" in parts
                 await cmd_run(session, parts[1], dry_run=dry)
+
+        case "/calibrate":
+            check_only = "--check" in parts
+            dry_run    = "--dry" in parts
+            await cmd_calibrate(session, check_only=check_only, dry_run=dry_run)
 
         case "/teach":
             step = float(parts[1]) if len(parts) > 1 else 0.02
