@@ -18,6 +18,11 @@ from pathlib import Path
 import yaml
 import structlog
 
+try:
+    import logfire as _logfire
+except ImportError:
+    _logfire = None  # type: ignore[assignment]
+
 from cobot.scenarios.schema import (
     Scenario, ScenarioStep,
     MoveJointsStep, MoveNamedPoseStep, MoveTCPStep, MovePathStep,
@@ -79,9 +84,13 @@ class ScenarioExecutor:
         logger.info("executor.start", scenario=scenario.name, dry_run=dry_run)
         results: list[StepResult] = []
 
+        _span = _logfire.span("executor.run", scenario_name=scenario.name, dry_run=dry_run) if _logfire else None
+        if _span:
+            _span.__enter__()
+
         ok, error = await self._run_steps(scenario.steps, results, dry_run, offset=0)
 
-        return ExecutionResult(
+        exec_result = ExecutionResult(
             scenario_name=scenario.name,
             success=ok,
             steps_completed=len([r for r in results if r.ok]),
@@ -89,6 +98,18 @@ class ScenarioExecutor:
             error=error,
             step_results=results,
         )
+        if _span:
+            if _logfire:
+                _logfire.info(
+                    "executor.complete",
+                    scenario_name=scenario.name,
+                    success=ok,
+                    steps_completed=exec_result.steps_completed,
+                    total_steps=exec_result.total_steps,
+                    error=error,
+                )
+            _span.__exit__(None, None, None)
+        return exec_result
 
     async def _run_steps(
         self,
@@ -132,11 +153,31 @@ class ScenarioExecutor:
             try:
                 response = await self._execute_step(step)
             except Exception as e:
-                results.append(StepResult(idx, step.type, False, {"error": str(e)}, time.time() - t0))
+                dur = time.time() - t0
+                results.append(StepResult(idx, step.type, False, {"error": str(e)}, dur))
+                if _logfire:
+                    _logfire.error(
+                        "executor.step",
+                        step_index=idx,
+                        step_type=step.type,
+                        ok=False,
+                        duration_sec=round(dur, 3),
+                        error=str(e),
+                    )
                 return False, f"Step {idx} ({step.type}) raised: {e}"
 
             ok = response.get("ok", True)
-            results.append(StepResult(idx, step.type, ok, response, time.time() - t0))
+            dur = time.time() - t0
+            results.append(StepResult(idx, step.type, ok, response, dur))
+            if _logfire:
+                _logfire.info(
+                    "executor.step",
+                    step_index=idx,
+                    step_type=step.type,
+                    ok=ok,
+                    duration_sec=round(dur, 3),
+                    mcp_message=response.get("message", ""),
+                )
 
             if not ok:
                 return False, f"Step {idx} ({step.type}) failed: {response.get('message', '')}"

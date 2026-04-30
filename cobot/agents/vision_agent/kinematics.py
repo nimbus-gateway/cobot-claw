@@ -19,6 +19,11 @@ import math
 
 import numpy as np
 
+try:
+    import logfire as _logfire
+except ImportError:
+    _logfire = None  # type: ignore[assignment]
+
 APPROACH_Z_OFFSET = 0.12   # metres above object for pre-grasp approach
 PICK_Z_OFFSET     = 0.02   # metres above detected surface for grasp
 LIFT_Z_OFFSET     = 0.20   # metres above object after grasping
@@ -276,23 +281,42 @@ def get_joints_for_pose(name: str, x: float, y: float, z: float,
     If robot IK error exceeds threshold, falls back to local analytical IK."""
     print(f"  {name}  ({x:.3f}, {y:.3f}, {z:.3f})")
     q_seed = _auto_seed(y, q_seed)
+    solver_used = "local"
+    robot_ik_fallback = False
+
     if arm_mcp_url:
+        solver_used = "robot"
         joints = robot_ik(x, y, z, arm_mcp_url, q_seed)
         if joints:
             T   = ur3e_fk(joints)
             err = float(np.linalg.norm(T[:3, 3] - np.array([x, y, z])))
             if err > _ROBOT_IK_ERR_THRESHOLD:
                 print(f"    [robot IK] err={err*1000:.1f}mm > threshold, falling back to local IK")
+                robot_ik_fallback = True
+                solver_used = "local"
                 joints = ur3e_ik(x, y, z, q_seed)
             else:
                 print(f"    [robot IK] joints={[round(j, 4) for j in joints]}  "
                       f"err={err * 1000:.1f}mm  z_tool={T[:3, 2].round(3).tolist()}")
+                if _logfire:
+                    _logfire.info("ik.solved", pose_name=name, x=x, y=y, z=z,
+                                  solver_used=solver_used, fk_error_mm=round(err * 1000, 1),
+                                  robot_ik_fallback=False)
                 return joints
     else:
         joints = ur3e_ik(x, y, z, q_seed)
+
     if joints:
         T   = ur3e_fk(joints)
         err = float(np.linalg.norm(T[:3, 3] - np.array([x, y, z])))
         print(f"    → joints={[round(j, 4) for j in joints]}  "
               f"err={err * 1000:.1f}mm  z_tool={T[:3, 2].round(3).tolist()}")
+        if _logfire:
+            _logfire.info("ik.solved", pose_name=name, x=x, y=y, z=z,
+                          solver_used=solver_used, fk_error_mm=round(err * 1000, 1),
+                          robot_ik_fallback=robot_ik_fallback)
+    else:
+        if _logfire:
+            _logfire.warning("ik.no_solution", pose_name=name, x=x, y=y, z=z,
+                             solver_used=solver_used)
     return joints

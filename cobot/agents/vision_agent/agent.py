@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+try:
+    import logfire as _logfire
+except ImportError:
+    _logfire = None  # type: ignore[assignment]
+
 import cv2
 import numpy as np
 from pydantic import BaseModel
@@ -282,20 +287,31 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         # 1. Detect pick target
         pick_pos = _detect_xyz(pick_description)
         if pick_pos is None:
+            if _logfire:
+                _logfire.warning("vision.detection_failed", object=pick_description, role="pick")
             return {"success": False, "error": f"Could not locate pick target '{pick_description}'"}
         px_b = pick_pos["x"] + x_off
         py_b = pick_pos["y"] + y_off
         pz_b = pick_pos["z"]
         print(f"  [pick_and_place] pick: ({px_b:.3f},{py_b:.3f},{pz_b:.3f})")
+        if _logfire:
+            _logfire.info("vision.detection", object=pick_description, role="pick",
+                          base_x=round(px_b, 4), base_y=round(py_b, 4), base_z=round(pz_b, 4),
+                          x_offset_applied=x_off, y_offset_applied=y_off)
 
         # 2. Detect place target
         place_pos = _detect_xyz(place_description)
         if place_pos is None:
+            if _logfire:
+                _logfire.warning("vision.detection_failed", object=place_description, role="place")
             return {"success": False, "error": f"Could not locate place target '{place_description}'"}
         plx = place_pos["x"]
         ply = place_pos["y"]
         plz = place_pos["z"]
         print(f"  [pick_and_place] place: ({plx:.3f},{ply:.3f},{plz:.3f})")
+        if _logfire:
+            _logfire.info("vision.detection", object=place_description, role="place",
+                          base_x=round(plx, 4), base_y=round(ply, 4), base_z=round(plz, 4))
 
         from cobot.agents.vision_agent.kinematics import PICK_Z_OFFSET
 
@@ -307,7 +323,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         # --- PICK PHASE ---
         await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
         if gripper:
-            await gripper.call_tool("move", {"position": 0, "speed": 100, "force": 100})
+            await gripper.call_tool("open", {"speed": 100, "force": 100})
 
         await arm.call_tool("move_joints", {"joints": j_pick_approach, "speed": 0.3, "accel": 0.5})
 
@@ -356,7 +372,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
             await arm.call_tool("move_joints", {"joints": j_approach2,  "speed": 0.2, "accel": 0.4})
         await arm.call_tool("move_joints", {"joints": j_pick_grasp,    "speed": 0.1, "accel": 0.2})
         if gripper:
-            await gripper.call_tool("move", {"position": 100, "speed": 100, "force": 100})
+            await gripper.call_tool("close", {"speed": 100, "force": 100})
         await arm.call_tool("move_joints", {"joints": j_pick_lift,     "speed": 0.2, "accel": 0.4})
 
         # --- PLACE PHASE: re-detect from lift position, then move directly to place ---
@@ -390,7 +406,15 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         j_place_approach = get_joints_for_pose("place_approach", plx, ply, round(plz + APPROACH_Z_OFFSET, 4), j_pick_lift, arm_mcp_url=mcp_url)
         if j_place_approach is None:
             return {"success": False, "error": "IK failed for place approach"}
-        drop_z = max(plz + drop_height_m, ctx.deps.cfg.agents.vision.min_drop_z_m)
+        min_drop_z = ctx.deps.cfg.agents.vision.min_drop_z_m
+        computed_drop_z = plz + drop_height_m
+        drop_z = max(computed_drop_z, min_drop_z)
+        if _logfire:
+            _logfire.info("vision.drop_z",
+                          computed_m=round(computed_drop_z, 4),
+                          applied_m=round(drop_z, 4),
+                          clamped=drop_z > computed_drop_z,
+                          min_drop_z_m=min_drop_z)
         j_place_drop = get_joints_for_pose("place_drop", plx, ply, round(drop_z, 4), j_place_approach, arm_mcp_url=None)
         if j_place_drop is None:
             return {"success": False, "error": "IK failed for place drop"}
@@ -398,7 +422,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.3, "accel": 0.5})
         await arm.call_tool("move_joints", {"joints": j_place_drop,     "speed": 0.1, "accel": 0.2})
         if gripper:
-            await gripper.call_tool("move", {"position": 255, "speed": 100, "force": 100})
+            await gripper.call_tool("open", {"speed": 100, "force": 100})
         await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.2, "accel": 0.4})
         await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
 
@@ -481,7 +505,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
 
         if gripper:
-            await gripper.call_tool("move", {"position": 0, "speed": 100, "force": 100})
+            await gripper.call_tool("open", {"speed": 100, "force": 100})
 
         await arm.call_tool("move_joints", {"joints": j_approach, "speed": 0.3, "accel": 0.5})
 
@@ -544,7 +568,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         await arm.call_tool("move_joints", {"joints": j_grasp, "speed": 0.1, "accel": 0.2})
 
         if gripper:
-            await gripper.call_tool("move", {"position": 100, "speed": 100, "force": 100})
+            await gripper.call_tool("close", {"speed": 100, "force": 100})
 
         await arm.call_tool("move_joints", {"joints": j_lift, "speed": 0.2, "accel": 0.4})
 

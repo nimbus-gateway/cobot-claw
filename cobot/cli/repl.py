@@ -38,6 +38,11 @@ from cobot.cli.renderer import (
 )
 from cobot.cli.session import CobotSession
 
+try:
+    import logfire as _logfire
+except ImportError:
+    _logfire = None  # type: ignore[assignment]
+
 
 # ---------------------------------------------------------------------------
 # Offline stub deps (used when MCP servers are unreachable)
@@ -460,6 +465,15 @@ async def run_repl(session: CobotSession) -> None:
             text = "/help"
 
         session.history.append({"role": "user", "content": text})
+
+        if _logfire and not text.startswith("/"):
+            _logfire.info(
+                "repl.user_utterance",
+                text=text,
+                word_count=len(text.split()),
+                history_turn_index=len(session.history) - 1,
+                session_id=session.session_id,
+            )
 
         if text.startswith("/") or text == "?":
             await _handle_slash_command(text, session)

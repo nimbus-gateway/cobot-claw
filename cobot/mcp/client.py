@@ -19,6 +19,7 @@ Or as an async context manager:
 from __future__ import annotations
 
 import json
+import time
 from types import TracebackType
 from typing import Any
 
@@ -27,6 +28,11 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import Tool
 
 from cobot.logging import get_logger
+
+try:
+    import logfire as _logfire
+except ImportError:
+    _logfire = None  # type: ignore[assignment]
 
 logger = get_logger("cobot.mcp.client")
 
@@ -153,36 +159,51 @@ class MCPClient:
           4. Empty dict if no content at all
         """
         session = self._require_session()
+        _t0 = time.perf_counter()
 
         try:
             result = await session.call_tool(name, arguments)
         except Exception as e:
+            if _logfire:
+                _logfire.error(
+                    "mcp.call_tool",
+                    tool_name=name,
+                    arguments=arguments,
+                    ok=False,
+                    latency_ms=round((time.perf_counter() - _t0) * 1000, 1),
+                    error=str(e),
+                    mcp_url=self.url,
+                )
             raise MCPClientError(f"Tool call '{name}' failed: {e}") from e
 
         # structuredContent is preferred — clean dict, no parsing needed
         if result.structuredContent is not None:
-            return result.structuredContent
-
-        # Fall back to text content
-        if not result.content:
+            payload = result.structuredContent
+        elif not result.content:
             logger.warning("mcp.empty_result", tool=name)
-            return {}
+            payload = {}
+        else:
+            text_blocks = [b.text for b in result.content if hasattr(b, "text")]
+            if not text_blocks:
+                payload = {}
+            else:
+                text = text_blocks[0]
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    logger.warning("mcp.json_parse_failed", tool=name, text=text[:120])
+                    payload = {"raw": text}
 
-        text_blocks = [
-            block.text
-            for block in result.content
-            if hasattr(block, "text")
-        ]
-
-        if not text_blocks:
-            return {}
-
-        text = text_blocks[0]
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("mcp.json_parse_failed", tool=name, text=text[:120])
-            return {"raw": text}
+        if _logfire:
+            _logfire.info(
+                "mcp.call_tool",
+                tool_name=name,
+                arguments=arguments,
+                ok=bool(payload.get("ok", True)),
+                latency_ms=round((time.perf_counter() - _t0) * 1000, 1),
+                mcp_url=self.url,
+            )
+        return payload
 
     # ------------------------------------------------------------------
     # PydanticAI / OpenAI tool schema conversion

@@ -135,6 +135,10 @@ async def _run_calibration(call_mcp, calib_file: str, check_only: bool, dry_run:
 
         tcp = await call_mcp("get_tcp_pose", {})
         print(f"  TCP from robot: {tcp}")
+        if not tcp.get("ok"):
+            print(f"  ERROR: get_tcp_pose failed — {tcp.get('message', 'unknown error')}")
+            print("  Hint: set BASE_FRAME env var on the arm MCP server to match your ROS2 TF tree (e.g. base_link, ur3e_base)")
+            continue
         pos      = tcp["position_m"]
         tcp_base = np.array([pos["x"], pos["y"], pos["z"]])
 

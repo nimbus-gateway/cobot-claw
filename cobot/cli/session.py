@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 
 from cobot.config import CobotConfig, RobotConfig
@@ -21,6 +22,7 @@ class CobotSession:
     active_robot: RobotConfig
     config_path: str = "cobot.yaml"
     active_agent: str = "orchestrator"
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     deps: OrchestratorDeps | None = None
     history: list[dict] = field(default_factory=list)
     message_history: list[ModelMessage] = field(default_factory=list)
