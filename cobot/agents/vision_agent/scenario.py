@@ -144,7 +144,8 @@ def generate_scenario(
     pick_z_approach  = round(pick_base["z"]  + APPROACH_Z_OFFSET, 4)
     pick_z_grasp     = round(pick_base["z"]  + PICK_Z_OFFSET,     4)
     place_z_approach = round(place_base["z"] + APPROACH_Z_OFFSET, 4)
-    place_z_drop     = round(place_base["z"] + PICK_Z_OFFSET,     4)
+    min_drop_z = cfg.agents.vision.min_drop_z_m if cfg is not None else 0.30
+    place_z_drop = round(max(place_base["z"] + PICK_Z_OFFSET, min_drop_z), 4)
 
     def ik(label: str, x: float, y: float, z: float,
            q_seed: list[float] | None = None) -> list[float]:

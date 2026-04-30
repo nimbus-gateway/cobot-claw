@@ -128,6 +128,31 @@ async def _cmd_ingest(session: CobotSession, path: str) -> None:
 # Slash commands
 # ---------------------------------------------------------------------------
 
+async def _cmd_reload_config(session: CobotSession) -> None:
+    """Reload cobot.yaml and reconnect MCP servers."""
+    from cobot.config import load_config
+    from cobot.cli.app import _connect_session
+
+    try:
+        new_cfg = load_config(session.config_path)
+    except Exception as e:
+        print_error(f"Failed to load {session.config_path}: {e}")
+        return
+
+    session.cfg = new_cfg
+    session.active_robot = new_cfg.default_robot
+    session.deps = None
+    session.mcp_status = {}
+
+    console.print(f"  [dim]Config reloaded from {session.config_path} — reconnecting…[/dim]")
+    try:
+        await _connect_session(session)
+        status = "connected" if session.robot_connected else "partially connected"
+        console.print(f"  [green]✓[/green] Config reloaded and {status}")
+    except Exception as e:
+        print_error(f"Reconnect failed after reload: {e}")
+
+
 _HELP_TEXT = """
 [bold]Slash commands[/bold]
   [cyan]/status[/cyan]              Robot state and motion info
@@ -138,6 +163,7 @@ _HELP_TEXT = """
   [cyan]/calibrate[/cyan]            Run hand-eye calibration (moves arm through 4 poses)
   [cyan]/calibrate --check[/cyan]   Report current calibration error without saving
   [cyan]/ingest[/cyan] [dim][path][/dim]       Index robot manuals into RAG knowledge base
+  [cyan]/reload-config[/cyan]        Reload cobot.yaml and reconnect MCP servers
   [cyan]/reconnect[/cyan]           Reconnect to robot MCP servers
   [cyan]/clear[/cyan]               Clear the screen
   [cyan]/exit[/cyan]                Quit
@@ -185,6 +211,9 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
         case "/ingest":
             path = parts[1] if len(parts) > 1 else "./manuals"
             await _cmd_ingest(session, path)
+
+        case "/reload-config":
+            await _cmd_reload_config(session)
 
         case "/reconnect":
             from cobot.cli.app import _connect_session

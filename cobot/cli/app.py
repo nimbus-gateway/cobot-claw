@@ -36,7 +36,7 @@ def _build_session(config: str, robot: str | None) -> CobotSession:
             console.print(f"[red]Robot '{robot}' not found in fleet.[/red]")
             raise typer.Exit(1)
         active_robot = matches[0]
-    return CobotSession(cfg=cfg, active_robot=active_robot)
+    return CobotSession(cfg=cfg, active_robot=active_robot, config_path=config)
 
 
 class _OfflineMCP:

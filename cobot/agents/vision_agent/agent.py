@@ -390,14 +390,15 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         j_place_approach = get_joints_for_pose("place_approach", plx, ply, round(plz + APPROACH_Z_OFFSET, 4), j_pick_lift, arm_mcp_url=mcp_url)
         if j_place_approach is None:
             return {"success": False, "error": "IK failed for place approach"}
-        j_place_drop = get_joints_for_pose("place_drop", plx, ply, round(plz + drop_height_m, 4), j_place_approach, arm_mcp_url=None)
+        drop_z = max(plz + drop_height_m, ctx.deps.cfg.agents.vision.min_drop_z_m)
+        j_place_drop = get_joints_for_pose("place_drop", plx, ply, round(drop_z, 4), j_place_approach, arm_mcp_url=None)
         if j_place_drop is None:
             return {"success": False, "error": "IK failed for place drop"}
 
         await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.3, "accel": 0.5})
         await arm.call_tool("move_joints", {"joints": j_place_drop,     "speed": 0.1, "accel": 0.2})
         if gripper:
-            await gripper.call_tool("move", {"position": 0, "speed": 100, "force": 100})
+            await gripper.call_tool("move", {"position": 255, "speed": 100, "force": 100})
         await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.2, "accel": 0.4})
         await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
 

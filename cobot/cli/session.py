@@ -19,6 +19,7 @@ class CobotSession:
 
     cfg: CobotConfig
     active_robot: RobotConfig
+    config_path: str = "cobot.yaml"
     active_agent: str = "orchestrator"
     deps: OrchestratorDeps | None = None
     history: list[dict] = field(default_factory=list)

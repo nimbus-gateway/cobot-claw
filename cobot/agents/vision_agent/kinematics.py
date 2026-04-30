@@ -34,8 +34,23 @@ _DH = [
 ]
 
 # Reference config used to prefer "natural" arm orientation when no seed given
-_PICK_SEED = [1.151908, -1.467556, -1.403377, -1.746785,  1.567782, 3.172426]
-_HOME_SEED = [-3.16018, -0.6864,   -1.4132,   -2.0002,    1.63811,  3.17233]
+_PICK_SEED       = [ 1.151908, -1.467556, -1.403377, -1.746785,  1.567782, 3.172426]
+_PICK_SEED_LEFT  = [-1.151908, -1.467556, -1.403377, -1.746785,  1.567782, 3.172426]
+_HOME_SEED       = [-3.16018,  -0.6864,   -1.4132,   -2.0002,    1.63811,  3.17233]
+
+
+def _auto_seed(y: float, q_seed: list[float] | None) -> list[float]:
+    """Return q_seed if given, else pick a side-appropriate default seed.
+
+    Using the robot's current joint state as IK seed (the default when no
+    q_near is passed) causes intermittent failures: after a move that left
+    the arm in a non-standard pose, the robot IK finds a 'close' solution
+    for the new target that requires extreme wrist compensation.  Always
+    seeding from a known-good reference configuration avoids this.
+    """
+    if q_seed is not None:
+        return q_seed
+    return _PICK_SEED_LEFT if y > 0.05 else _PICK_SEED
 
 
 def _dh_matrix(d: float, a: float, alpha: float, theta: float) -> np.ndarray:
@@ -157,6 +172,7 @@ def ur3e_ik(x: float, y: float, z: float,
     """
     p_target = np.array([x, y, z])
     _PI = math.pi
+    q_seed = _auto_seed(y, q_seed)
 
     candidates: list[tuple[float, float, list[float]]] = []
 
@@ -167,13 +183,10 @@ def ur3e_ik(x: float, y: float, z: float,
             p_err = float(np.linalg.norm(T_fk[:3, 3] - p_target))
             if p_err > 0.010:
                 continue
-            if q_seed:
-                seed_dist = sum(
-                    (((a - b + _PI) % (2 * _PI) - _PI) ** 2)
-                    for a, b in zip(sol, q_seed)
-                )
-            else:
-                seed_dist = 0.0
+            seed_dist = sum(
+                (((a - b + _PI) % (2 * _PI) - _PI) ** 2)
+                for a, b in zip(sol, q_seed)
+            )
             candidates.append((seed_dist, p_err, sol))
 
     if not candidates:
@@ -262,6 +275,7 @@ def get_joints_for_pose(name: str, x: float, y: float, z: float,
     """Solve IK for a named pose. Uses robot MCP if arm_mcp_url provided, else local.
     If robot IK error exceeds threshold, falls back to local analytical IK."""
     print(f"  {name}  ({x:.3f}, {y:.3f}, {z:.3f})")
+    q_seed = _auto_seed(y, q_seed)
     if arm_mcp_url:
         joints = robot_ik(x, y, z, arm_mcp_url, q_seed)
         if joints:
