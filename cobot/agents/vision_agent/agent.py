@@ -123,23 +123,26 @@ class VisionAgentResult(BaseModel):
     error: str | None = None
 
 
+_DEFAULT_VISION_PROMPT = (
+    "You are the Vision Agent for a UR3e robot pick-and-place cell.\n"
+    "You have direct access to a RealSense D455 camera and Gemini ER.\n\n"
+    "Tool selection guide:\n"
+    "- User says 'pick', 'grab', 'lift', 'get' an object (no destination) → call pick_object().\n"
+    "- User says 'pick X and put/drop/place/move it to/in/on Y' → call pick_and_place_object().\n"
+    "- User says 'point to', 'show me', 'indicate', 'hover over' an object → call point_to_object().\n"
+    "- User says 'where is X', 'find X', 'what do you see' → call capture_scene() then locate_object().\n"
+    "- User says 'is workspace clear' → call check_workspace_clear().\n"
+    "Never generate YAML scenario files — that is the Config Agent's responsibility.\n\n"
+    "Return a VisionAgentResult with all relevant fields populated."
+)
+
+
 def build_vision_agent(cfg: CobotConfig) -> Agent:
     agent: Agent[VisionAgentDeps, VisionAgentResult] = Agent(
         make_model(cfg.agents.vision.model, cfg),
         deps_type=VisionAgentDeps,
         output_type=VisionAgentResult,
-        system_prompt=(
-            "You are the Vision Agent for a UR3e robot pick-and-place cell.\n"
-            "You have direct access to a RealSense D455 camera and Gemini ER.\n\n"
-            "Tool selection guide:\n"
-            "- User says 'pick', 'grab', 'lift', 'get' an object (no destination) → call pick_object().\n"
-            "- User says 'pick X and put/drop/place/move it to/in/on Y' → call pick_and_place_object().\n"
-            "- User says 'point to', 'show me', 'indicate', 'hover over' an object → call point_to_object().\n"
-            "- User says 'where is X', 'find X', 'what do you see' → call capture_scene() then locate_object().\n"
-            "- User says 'is workspace clear' → call check_workspace_clear().\n"
-            "Never generate YAML scenario files — that is the Config Agent's responsibility.\n\n"
-            "Return a VisionAgentResult with all relevant fields populated."
-        ),
+        system_prompt=cfg.agents.vision.system_prompt or _DEFAULT_VISION_PROMPT,
     )
 
     @agent.tool

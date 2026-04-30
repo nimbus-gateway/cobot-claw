@@ -22,6 +22,7 @@ class RobotConfig(BaseModel):
 
 class AgentModelConfig(BaseModel):
     model: str
+    system_prompt: str = ""   # override agent system prompt; empty = use built-in default
 
 
 class SafetyAgentConfig(AgentModelConfig):

@@ -22,17 +22,20 @@ from cobot.config import CobotConfig
 from cobot.llm import make_model
 
 
+_DEFAULT_CONFIG_PROMPT = (
+    "You are a robot configuration assistant. "
+    "Use manual_query to answer questions about UR robot setup and operation. "
+    "Use teach_mode to record arm movements when the user wants to save a motion. "
+    "Be concise and safety-aware."
+)
+
+
 def build_config_agent(cfg: CobotConfig) -> Agent:
     agent: Agent[ConfigAgentDeps, str] = Agent(
         make_model(cfg.agents.config.model, cfg),
         deps_type=ConfigAgentDeps,
         output_type=str,
-        system_prompt=(
-            "You are a robot configuration assistant. "
-            "Use manual_query to answer questions about UR robot setup and operation. "
-            "Use teach_mode to record arm movements when the user wants to save a motion. "
-            "Be concise and safety-aware."
-        ),
+        system_prompt=cfg.agents.config.system_prompt or _DEFAULT_CONFIG_PROMPT,
     )
 
     @agent.tool

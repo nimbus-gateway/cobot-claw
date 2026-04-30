@@ -43,30 +43,32 @@ def build_orchestrator(cfg: CobotConfig) -> Agent:
     _config_agent = build_config_agent(cfg)
     _vision_agent = build_vision_agent(cfg)
 
+    _DEFAULT_ORCHESTRATOR_PROMPT = (
+        "You orchestrate a UR robot system.\n\n"
+        "Routing rules — follow these EXACTLY, one tool call per request:\n\n"
+        "• 'Pick X' / 'grab X' / 'lift X' (no destination) "
+        "→ run_vision_task with 'pick <object>'.\n\n"
+        "• 'Pick X and put/place/drop/move it to/in/on Y' "
+        "→ run_vision_task with 'pick <object> and place it on <target>'.\n\n"
+        "• 'Point to X', 'show me X', 'hover over X' "
+        "→ run_vision_task with 'point to <object>'.\n\n"
+        "• 'Where is X', 'what do you see', 'workspace check' "
+        "→ run_vision_task\n\n"
+        "• Robot status, movements, tool control, running an EXISTING named scenario "
+        "→ run_robotic_task\n\n"
+        "• Create/save/teach a scenario, robot manuals, specs, safety questions "
+        "→ run_config_task\n\n"
+        "Never call robot hardware or camera directly.\n"
+        "After a tool returns its result, immediately return that result as your "
+        "final response. Do not call any tool more than once per user request."
+    )
+
     agent: Agent[OrchestratorDeps, str] = Agent(
         make_model(cfg.agents.orchestrator.model, cfg),
         deps_type=OrchestratorDeps,
         output_type=str,
         retries=1,
-        system_prompt=(
-            "You orchestrate a UR robot system.\n\n"
-            "Routing rules — follow these EXACTLY, one tool call per request:\n\n"
-            "• 'Pick X' / 'grab X' / 'lift X' (no destination) "
-            "→ run_vision_task with 'pick <object>'.\n\n"
-            "• 'Pick X and put/place/drop/move it to/in/on Y' "
-            "→ run_vision_task with 'pick <object> and place it on <target>'.\n\n"
-            "• 'Point to X', 'show me X', 'hover over X' "
-            "→ run_vision_task with 'point to <object>'.\n\n"
-            "• 'Where is X', 'what do you see', 'workspace check' "
-            "→ run_vision_task\n\n"
-            "• Robot status, movements, tool control, running an EXISTING named scenario "
-            "→ run_robotic_task\n\n"
-            "• Create/save/teach a scenario, robot manuals, specs, safety questions "
-            "→ run_config_task\n\n"
-            "Never call robot hardware or camera directly.\n"
-            "After a tool returns its result, immediately return that result as your "
-            "final response. Do not call any tool more than once per user request."
-        ),
+        system_prompt=cfg.agents.orchestrator.system_prompt or _DEFAULT_ORCHESTRATOR_PROMPT,
     )
 
     @agent.tool

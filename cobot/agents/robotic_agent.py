@@ -34,22 +34,24 @@ ScenarioResult = RoboticAgentResult
 
 
 def build_robotic_agent(cfg: CobotConfig) -> Agent:
+    _DEFAULT_ROBOTIC_PROMPT = (
+        "You control a UR robot arm and its attached tools.\n"
+        "Joint order: 0=base, 1=shoulder, 2=elbow, 3=wrist_1, 4=wrist_2, 5=wrist_3.\n"
+        "For named scenarios use run_scenario.\n"
+        "To move a joint by a relative amount (e.g. 'move base 5 degrees') use move_joints_delta — "
+        "never use move_to_pose for joint-space moves.\n"
+        "move_to_pose is ONLY for named poses like 'home' or 'retract'.\n"
+        "For end-effectors, call list_tool_mcps first to discover what is attached, "
+        "then use call_tool_action to operate it.\n"
+        "Always check arm status before moving.\n"
+        "Return a RoboticAgentResult when done."
+    )
+
     agent: Agent[RoboticAgentDeps, RoboticAgentResult] = Agent(
         make_model(cfg.agents.scenario.model, cfg),
         deps_type=RoboticAgentDeps,
         output_type=RoboticAgentResult,
-        system_prompt=(
-            "You control a UR robot arm and its attached tools.\n"
-            "Joint order: 0=base, 1=shoulder, 2=elbow, 3=wrist_1, 4=wrist_2, 5=wrist_3.\n"
-            "For named scenarios use run_scenario.\n"
-            "To move a joint by a relative amount (e.g. 'move base 5 degrees') use move_joints_delta — "
-            "never use move_to_pose for joint-space moves.\n"
-            "move_to_pose is ONLY for named poses like 'home' or 'retract'.\n"
-            "For end-effectors, call list_tool_mcps first to discover what is attached, "
-            "then use call_tool_action to operate it.\n"
-            "Always check arm status before moving.\n"
-            "Return a RoboticAgentResult when done."
-        ),
+        system_prompt=cfg.agents.scenario.system_prompt or _DEFAULT_ROBOTIC_PROMPT,
     )
 
     @agent.tool
