@@ -110,6 +110,7 @@ async def _connect_session(session: CobotSession) -> None:
         cfg=session.cfg,
         arm_mcp=arm,
         gripper_mcp=tool_mcps.get("gripper"),
+        camera_stream=session.camera_stream,
     )
     session.mcp_status["vision"] = True
 

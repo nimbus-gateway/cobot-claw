@@ -33,6 +33,7 @@ class VisionAgentDeps:
     detector: VisionDetector | None = None
     arm_mcp: object | None = None       # MCPClient — injected at session startup
     gripper_mcp: object | None = None   # MCPClient — injected at session startup
+    camera_stream: object | None = None  # CameraStream — set when /vision-debug is active
     _T_base_cam: np.ndarray | None = field(default=None, repr=False)
     # Cached frame from the last capture_scene call — reused by locate_object
     _frame: tuple | None = field(default=None, repr=False)   # (color, depth, ci, ds)
@@ -66,22 +67,34 @@ class VisionAgentDeps:
         cv2.imwrite(self.debug_image_path, color)
 
     def get_frame(self):
-        """Return cached frame, capturing a fresh one if needed."""
+        """Return cached frame. Uses stream if active, otherwise captures directly."""
         if self._frame is None:
-            color, depth, ci, ds = capture_realsense()
+            color, depth, ci, ds = self._capture()
             self.set_frame(color, depth, ci, ds)
         return self._frame
+
+    def capture_fresh_frame(self):
+        """Always capture a new frame, bypassing the cache."""
+        color, depth, ci, ds = self._capture()
+        self.set_frame(color, depth, ci, ds)
+        return self._frame
+
+    def _capture(self) -> tuple:
+        """Single capture entry point — uses stream when active, otherwise direct."""
+        if self.camera_stream is not None:
+            return self.camera_stream.get_latest_frame()
+        return capture_realsense()
 
     def locate_sync(self, description: str) -> dict | None:
         """Capture a fresh frame, locate object, return base-frame {x,y,z} or None."""
         if self.detector is None:
             return None
         from cobot.agents.vision_agent.camera import (
-            capture_realsense, encode_jpeg, depth_at_pixel, depth_at_box,
+            encode_jpeg, depth_at_pixel, depth_at_box,
             pixel_to_camera_xyz, camera_to_base,
         )
         T = self.get_T_base_cam()
-        color, depth, ci, ds = capture_realsense()
+        color, depth, ci, ds = self._capture()
         det = self.detector.locate(encode_jpeg(color), description)
         if det is None:
             return None
@@ -102,14 +115,20 @@ class VisionAgentDeps:
         xyz = pixel_to_camera_xyz(ci, px, py, d_m)
         return camera_to_base(xyz, T)
 
-    def annotate(self, px: int, py: int, label: str, d_m: float) -> None:
-        """Draw a detection point on the accumulated annotated image."""
+    def annotate(self, px: int, py: int, label: str, d_m: float,
+                 box: tuple | None = None) -> None:
+        """Draw a detection on the local annotated image and on the stream window."""
         if self._annotated is None:
             return
+        if box:
+            x1, y1, x2, y2 = box
+            cv2.rectangle(self._annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.circle(self._annotated, (px, py), 10, (0, 255, 0), -1)
         cv2.putText(self._annotated, f"{label} {d_m:.2f}m", (px + 12, py),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         cv2.imwrite(self.debug_image_path, self._annotated)
+        if self.camera_stream is not None:
+            self.camera_stream.overlay_detection(label, px, py, d_m, box)
 
 
 class VisionAgentResult(BaseModel):
@@ -128,10 +147,12 @@ _DEFAULT_VISION_PROMPT = (
     "You have direct access to a RealSense D455 camera and Gemini ER.\n\n"
     "Tool selection guide:\n"
     "- User says 'pick', 'grab', 'lift', 'get' an object (no destination) → call pick_object().\n"
-    "- User says 'pick X and put/drop/place/move it to/in/on Y' → call pick_and_place_object().\n"
+    "- User says 'now place it on Y', 'put it in Y', 'drop it on Y' (object already held) → call place_object().\n"
+    "- User says 'pick X and put/drop/place/move it to/in/on Y' → call pick_object() THEN call place_object(). Two separate calls.\n"
     "- User says 'point to', 'show me', 'indicate', 'hover over' an object → call point_to_object().\n"
-    "- User says 'where is X', 'find X', 'what do you see' → call capture_scene() then locate_object().\n"
-    "- User says 'is workspace clear' → call check_workspace_clear().\n"
+    "- User says 'where is X', 'find X' → call locate_object() once.\n"
+    "- User says 'what do you see', 'what is on the table', 'workspace check' → call check_workspace_clear() once.\n"
+    "- Do NOT call capture_scene() — it is called automatically by locate_object().\n"
     "Never generate YAML scenario files — that is the Config Agent's responsibility.\n\n"
     "Return a VisionAgentResult with all relevant fields populated."
 )
@@ -152,7 +173,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         Saves the raw image to vision_scene.jpg for inspection.
         Call this once — subsequent locate_object calls reuse this frame.
         """
-        color, depth, ci, ds = capture_realsense()
+        color, depth, ci, ds = ctx.deps._capture()
         ctx.deps.set_frame(color, depth, ci, ds)
         valid = (depth * ds)[depth > 0]
         return {
@@ -226,215 +247,6 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         }
 
     @agent.tool
-    async def pick_and_place_object(
-        ctx: RunContext[VisionAgentDeps],
-        pick_description: str,
-        place_description: str,
-        drop_height_m: float = 0.05,
-    ) -> dict:
-        """
-        Detect two objects, pick the first and place it onto/into the second —
-        no YAML scenario is created. Executes the motion directly.
-
-        Use when the user says "pick X and put/drop/place it on/in Y",
-        "move X to Y", "transfer X to Y".
-
-        Args:
-            pick_description:  Object to pick, e.g. "white block".
-            place_description: Target location, e.g. "transparent box", "left side of table".
-            drop_height_m:     Height above detected place surface to release (default 0.05m).
-        """
-        from cobot.agents.vision_agent.camera import (
-            capture_realsense, encode_jpeg, depth_at_pixel, depth_at_box,
-            pixel_to_camera_xyz, camera_to_base,
-        )
-        from cobot.agents.vision_agent.kinematics import (
-            get_joints_for_pose, APPROACH_Z_OFFSET, PICK_Z_OFFSET, LIFT_Z_OFFSET, _PICK_SEED,
-        )
-
-        if ctx.deps.detector is None:
-            return {"success": False, "error": "Vision detector not configured"}
-        if ctx.deps.arm_mcp is None:
-            return {"success": False, "error": "arm_mcp not wired — cannot move robot"}
-
-        arm     = ctx.deps.arm_mcp
-        gripper = ctx.deps.gripper_mcp
-        T       = ctx.deps.get_T_base_cam()
-        mcp_url = ctx.deps.arm_mcp_url
-        x_off   = ctx.deps.cfg.agents.vision.pick_x_offset_m
-        y_off   = ctx.deps.cfg.agents.vision.pick_y_offset_m
-
-        def _detect_xyz(description: str) -> dict | None:
-            color, depth, ci, ds = capture_realsense()
-            h, w = color.shape[:2]
-            det = ctx.deps.detector.locate(encode_jpeg(color), description)
-            if det is None:
-                return None
-            ny, nx = det["point"]
-            px = int(nx / 1000 * w); py = int(ny / 1000 * h)
-            box = det.get("box_2d")
-            if box:
-                ymin, xmin, ymax, xmax = box
-                x1 = int(xmin/1000*w); y1 = int(ymin/1000*h)
-                x2 = int(xmax/1000*w); y2 = int(ymax/1000*h)
-                d_m = depth_at_box(depth, ds, x1, y1, x2, y2)
-                if d_m < 0.05:
-                    d_m = depth_at_pixel(depth, ci, px, py, ds)
-            else:
-                d_m = depth_at_pixel(depth, ci, px, py, ds)
-            if d_m < 0.05:
-                return None
-            xyz = pixel_to_camera_xyz(ci, px, py, d_m)
-            return camera_to_base(xyz, T)
-
-        # 1. Detect pick target
-        pick_pos = _detect_xyz(pick_description)
-        if pick_pos is None:
-            if _logfire:
-                _logfire.warning("vision.detection_failed", object=pick_description, role="pick")
-            return {"success": False, "error": f"Could not locate pick target '{pick_description}'"}
-        px_b = pick_pos["x"] + x_off
-        py_b = pick_pos["y"] + y_off
-        pz_b = pick_pos["z"]
-        print(f"  [pick_and_place] pick: ({px_b:.3f},{py_b:.3f},{pz_b:.3f})")
-        if _logfire:
-            _logfire.info("vision.detection", object=pick_description, role="pick",
-                          base_x=round(px_b, 4), base_y=round(py_b, 4), base_z=round(pz_b, 4),
-                          x_offset_applied=x_off, y_offset_applied=y_off)
-
-        # 2. Detect place target
-        place_pos = _detect_xyz(place_description)
-        if place_pos is None:
-            if _logfire:
-                _logfire.warning("vision.detection_failed", object=place_description, role="place")
-            return {"success": False, "error": f"Could not locate place target '{place_description}'"}
-        plx = place_pos["x"]
-        ply = place_pos["y"]
-        plz = place_pos["z"]
-        print(f"  [pick_and_place] place: ({plx:.3f},{ply:.3f},{plz:.3f})")
-        if _logfire:
-            _logfire.info("vision.detection", object=place_description, role="place",
-                          base_x=round(plx, 4), base_y=round(ply, 4), base_z=round(plz, 4))
-
-        from cobot.agents.vision_agent.kinematics import PICK_Z_OFFSET
-
-        # 3. IK for coarse pick approach only — grasp/lift IK computed after re-detection
-        j_pick_approach = get_joints_for_pose("pick_approach", px_b, py_b, round(pz_b + APPROACH_Z_OFFSET, 4), _PICK_SEED, arm_mcp_url=mcp_url)
-        if j_pick_approach is None:
-            return {"success": False, "error": "IK failed for pick approach"}
-
-        # --- PICK PHASE ---
-        await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
-        if gripper:
-            await gripper.call_tool("open", {"speed": 100, "force": 100})
-
-        await arm.call_tool("move_joints", {"joints": j_pick_approach, "speed": 0.3, "accel": 0.5})
-
-        # Re-detect pick from approach for accurate grasp/lift Z
-        print("  [pick_and_place] re-detecting pick from approach position …")
-        color_r, depth_r, ci_r, ds_r = capture_realsense()
-        h_r, w_r = color_r.shape[:2]
-        det_r = ctx.deps.detector.locate(encode_jpeg(color_r), pick_description)
-        if det_r is not None:
-            ny_r, nx_r = det_r["point"]
-            px_r = int(nx_r / 1000 * w_r); py_r = int(ny_r / 1000 * h_r)
-            box_r = det_r.get("box_2d")
-            if box_r:
-                ymin_r, xmin_r, ymax_r, xmax_r = box_r
-                x1_r = int(xmin_r/1000*w_r); y1_r = int(ymin_r/1000*h_r)
-                x2_r = int(xmax_r/1000*w_r); y2_r = int(ymax_r/1000*h_r)
-                px_r = (x1_r + x2_r) // 2
-                py_r = y1_r + (y2_r - y1_r) // 3
-                d_r  = depth_at_box(depth_r, ds_r, x1_r, y1_r, x2_r, y1_r + (y2_r - y1_r) // 2)
-                if d_r < 0.05:
-                    d_r = depth_at_pixel(depth_r, ci_r, px_r, py_r, ds_r)
-            else:
-                d_r = depth_at_pixel(depth_r, ci_r, px_r, py_r, ds_r)
-            if d_r >= 0.05:
-                xyz_r  = pixel_to_camera_xyz(ci_r, px_r, py_r, d_r)
-                base_r = camera_to_base(xyz_r, T)
-                px_b = base_r["x"] + x_off
-                py_b = base_r["y"] + y_off
-                pz_b = base_r["z"]
-                print(f"  [pick_and_place] refined pick: ({px_b:.3f},{py_b:.3f},{pz_b:.3f})")
-            else:
-                print("  [pick_and_place] re-detect depth invalid, using initial estimate")
-        else:
-            print("  [pick_and_place] re-detect failed, using initial estimate")
-
-        j_approach2 = get_joints_for_pose("pick_approach2", px_b, py_b, round(pz_b + APPROACH_Z_OFFSET, 4), j_pick_approach, arm_mcp_url=None)
-        grasp_seed = j_approach2 if j_approach2 is not None else j_pick_approach
-        j_pick_grasp = get_joints_for_pose("pick_grasp", px_b, py_b, round(pz_b + PICK_Z_OFFSET, 4), grasp_seed, arm_mcp_url=None)
-        if j_pick_grasp is None:
-            return {"success": False, "error": f"IK failed for pick grasp ({px_b:.3f},{py_b:.3f})"}
-        j_pick_lift = get_joints_for_pose("pick_lift", px_b, py_b, round(pz_b + LIFT_Z_OFFSET, 4), grasp_seed, arm_mcp_url=None)
-        if j_pick_lift is None:
-            return {"success": False, "error": "IK failed for pick lift"}
-
-        if j_approach2 is not None:
-            await arm.call_tool("move_joints", {"joints": j_approach2,  "speed": 0.2, "accel": 0.4})
-        await arm.call_tool("move_joints", {"joints": j_pick_grasp,    "speed": 0.1, "accel": 0.2})
-        if gripper:
-            await gripper.call_tool("close", {"speed": 100, "force": 100})
-        await arm.call_tool("move_joints", {"joints": j_pick_lift,     "speed": 0.2, "accel": 0.4})
-
-        # --- PLACE PHASE: re-detect from lift position, then move directly to place ---
-        print("  [pick_and_place] re-detecting place target from lift position …")
-        color_p, depth_p, ci_p, ds_p = capture_realsense()
-        h_p, w_p = color_p.shape[:2]
-        det_p = ctx.deps.detector.locate(encode_jpeg(color_p), place_description)
-        if det_p is None:
-            return {"success": False, "error": f"Could not re-locate place target '{place_description}' from lift position"}
-        ny_p, nx_p = det_p["point"]
-        px_p = int(nx_p / 1000 * w_p); py_p = int(ny_p / 1000 * h_p)
-        box_p = det_p.get("box_2d")
-        if box_p:
-            ymin_p, xmin_p, ymax_p, xmax_p = box_p
-            x1_p = int(xmin_p/1000*w_p); y1_p = int(ymin_p/1000*h_p)
-            x2_p = int(xmax_p/1000*w_p); y2_p = int(ymax_p/1000*h_p)
-            px_p = (x1_p + x2_p) // 2
-            py_p = (y1_p + y2_p) // 2
-            d_p  = depth_at_box(depth_p, ds_p, x1_p, y1_p, x2_p, y2_p)
-            if d_p < 0.05:
-                d_p = depth_at_pixel(depth_p, ci_p, px_p, py_p, ds_p)
-        else:
-            d_p = depth_at_pixel(depth_p, ci_p, px_p, py_p, ds_p)
-        if d_p < 0.05:
-            return {"success": False, "error": "No depth for place target from home position"}
-        xyz_p  = pixel_to_camera_xyz(ci_p, px_p, py_p, d_p)
-        base_p = camera_to_base(xyz_p, T)
-        plx = base_p["x"]; ply = base_p["y"]; plz = base_p["z"]
-        print(f"  [pick_and_place] place from lift: ({plx:.3f},{ply:.3f},{plz:.3f})")
-
-        j_place_approach = get_joints_for_pose("place_approach", plx, ply, round(plz + APPROACH_Z_OFFSET, 4), j_pick_lift, arm_mcp_url=mcp_url)
-        if j_place_approach is None:
-            return {"success": False, "error": "IK failed for place approach"}
-        min_drop_z = ctx.deps.cfg.agents.vision.min_drop_z_m
-        computed_drop_z = plz + drop_height_m
-        drop_z = max(computed_drop_z, min_drop_z)
-        if _logfire:
-            _logfire.info("vision.drop_z",
-                          computed_m=round(computed_drop_z, 4),
-                          applied_m=round(drop_z, 4),
-                          clamped=drop_z > computed_drop_z,
-                          min_drop_z_m=min_drop_z)
-        j_place_drop = get_joints_for_pose("place_drop", plx, ply, round(drop_z, 4), j_place_approach, arm_mcp_url=None)
-        if j_place_drop is None:
-            return {"success": False, "error": "IK failed for place drop"}
-
-        await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.3, "accel": 0.5})
-        await arm.call_tool("move_joints", {"joints": j_place_drop,     "speed": 0.1, "accel": 0.2})
-        if gripper:
-            await gripper.call_tool("open", {"speed": 100, "force": 100})
-        await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.2, "accel": 0.4})
-        await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
-
-        return {
-            "success": True,
-            "summary": f"Picked '{pick_description}' at ({px_b:.3f},{py_b:.3f},{pz_b:.3f}) and placed onto '{place_description}' at ({plx:.3f},{ply:.3f},{plz:.3f})",
-        }
-
-    @agent.tool
     async def pick_object(
         ctx: RunContext[VisionAgentDeps],
         description: str,
@@ -451,7 +263,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
             description: What to pick, e.g. "bottle on the table".
         """
         from cobot.agents.vision_agent.camera import (
-            capture_realsense, encode_jpeg, depth_at_pixel, depth_at_box,
+            encode_jpeg, depth_at_pixel, depth_at_box,
             pixel_to_camera_xyz, camera_to_base,
         )
         from cobot.agents.vision_agent.kinematics import (
@@ -468,7 +280,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         T       = ctx.deps.get_T_base_cam()
 
         # 1. Detect object
-        color, depth, ci, ds = capture_realsense()
+        color, depth, ci, ds = ctx.deps._capture()
         h, w = color.shape[:2]
         det = ctx.deps.detector.locate( encode_jpeg(color), description)
         if det is None:
@@ -514,7 +326,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
 
         # 4. Re-detect from approach position for accurate grasp/lift IK
         print("  [pick] re-detecting from approach position …")
-        color2, depth2, ci2, ds2 = capture_realsense()
+        color2, depth2, ci2, ds2 = ctx.deps._capture()
         h2, w2 = color2.shape[:2]
         det2 = ctx.deps.detector.locate( encode_jpeg(color2), description)
         if det2 is not None:
@@ -584,6 +396,121 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         }
 
     @agent.tool
+    async def place_object(
+        ctx: RunContext[VisionAgentDeps],
+        place_description: str,
+    ) -> dict:
+        """
+        Place the currently held object onto a target location detected by the camera.
+
+        Call this AFTER pick_object() — the arm must already be in lift position holding
+        an object. Detects the place target from the current arm position, moves above it,
+        releases the gripper, then returns home.
+
+        Use when the user says "now place it on X", "put it in Y", "drop it on Z" as a
+        follow-up after a pick.
+
+        Args:
+            place_description: Target location, e.g. "cardboard box", "left side of table".
+        """
+        from cobot.agents.vision_agent.camera import (
+            encode_jpeg, depth_at_pixel, depth_at_box_top,
+            pixel_to_camera_xyz, camera_to_base,
+        )
+        from cobot.agents.vision_agent.kinematics import (
+            get_joints_for_pose, APPROACH_Z_OFFSET,
+        )
+
+        if ctx.deps.detector is None:
+            return {"success": False, "error": "Vision detector not configured"}
+        if ctx.deps.arm_mcp is None:
+            return {"success": False, "error": "arm_mcp not wired — cannot move robot"}
+
+        arm     = ctx.deps.arm_mcp
+        gripper = ctx.deps.gripper_mcp
+        T       = ctx.deps.get_T_base_cam()
+        mcp_url = ctx.deps.arm_mcp_url
+
+        # Detect place target from current (lift) position
+        print(f"  [place] detecting place target '{place_description}' from current position …")
+        color, depth, ci, ds = ctx.deps._capture()
+        h, w = color.shape[:2]
+        det = ctx.deps.detector.locate(encode_jpeg(color), place_description)
+        if det is None:
+            return {"success": False, "error": f"Could not locate place target '{place_description}'"}
+
+        ny, nx = det["point"]
+        px = int(nx / 1000 * w); py = int(ny / 1000 * h)
+        box = det.get("box_2d")
+        if box:
+            ymin, xmin, ymax, xmax = box
+            x1 = int(xmin/1000*w); y1 = int(ymin/1000*h)
+            x2 = int(xmax/1000*w); y2 = int(ymax/1000*h)
+            top_fraction = 0.3
+            strip_h = max(1, int((y2 - y1) * top_fraction))
+            # Use horizontal center of box, but vertical center of top strip
+            # so back-projection lands on the top surface, not the front face
+            px = (x1 + x2) // 2
+            py = y1 + strip_h // 2
+            d_m = depth_at_box_top(depth, ds, x1, y1, x2, y2, top_fraction)
+            if d_m < 0.05:
+                d_m = depth_at_pixel(depth, ci, px, py, ds)
+        else:
+            d_m = depth_at_pixel(depth, ci, px, py, ds)
+
+        if d_m < 0.05:
+            return {"success": False, "error": "No depth reading for place target"}
+
+        depth_offset = ctx.deps.cfg.agents.vision.place_depth_offset_m
+        if depth_offset:
+            d_m = max(0.05, d_m - depth_offset)
+
+        xyz      = pixel_to_camera_xyz(ci, px, py, d_m)
+        base_pos = camera_to_base(xyz, T)
+        plx, ply, plz = base_pos["x"], base_pos["y"], base_pos["z"]
+        print(f"  [place] target at ({plx:.3f},{ply:.3f},{plz:.3f})")
+
+        if _logfire:
+            _logfire.info("vision.detection", object=place_description, role="place",
+                          base_x=round(plx, 4), base_y=round(ply, 4), base_z=round(plz, 4))
+
+        # Use current joint state as IK seed — arm is already in lift position after pick,
+        # so this gives the solver the correct configuration family for the transit.
+        current_joints: list[float] | None = None
+        try:
+            js = await arm.call_tool("get_joint_states", {})
+            raw = js.get("joints_rad") or js.get("joints")
+            if raw and len(raw) >= 6:
+                current_joints = [e["value_rad"] if isinstance(e, dict) else e for e in raw]
+        except Exception:
+            pass
+
+        # IK for approach — release from approach height, no descent
+        place_approach_z = round(max(plz + APPROACH_Z_OFFSET, ctx.deps.cfg.agents.vision.min_drop_z_m), 4)
+
+        if _logfire:
+            _logfire.info("vision.drop_z", applied_m=place_approach_z,
+                          clamped=place_approach_z > plz + APPROACH_Z_OFFSET,
+                          min_drop_z_m=ctx.deps.cfg.agents.vision.min_drop_z_m)
+
+        j_place_approach = get_joints_for_pose("place_approach", plx, ply, place_approach_z,
+                                               q_seed=current_joints, arm_mcp_url=mcp_url)
+        if j_place_approach is None:
+            return {"success": False, "error": "IK failed for place approach"}
+
+        # Execute place — open gripper at approach height, no descend
+        await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.3, "accel": 0.5})
+        if gripper:
+            await gripper.call_tool("open", {"speed": 100, "force": 100})
+        await arm.call_tool("move_joints", {"joints": j_place_approach, "speed": 0.2, "accel": 0.4})
+        await arm.call_tool("move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
+
+        return {
+            "success": True,
+            "summary": f"Placed object onto '{place_description}' at ({plx:.3f},{ply:.3f},{plz:.3f}), released at z={place_approach_z}m",
+        }
+
+    @agent.tool
     async def point_to_object(
         ctx: RunContext[VisionAgentDeps],
         description: str,
@@ -600,7 +527,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
             hover_height_m: Height above the detected object surface to hover (default 0.12 m).
         """
         from cobot.agents.vision_agent.camera import (
-            capture_realsense, encode_jpeg, depth_at_pixel, depth_at_box,
+            encode_jpeg, depth_at_pixel, depth_at_box,
             pixel_to_camera_xyz, camera_to_base,
         )
         from cobot.agents.vision_agent.kinematics import get_joints_for_pose, _PICK_SEED
@@ -613,7 +540,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         arm = ctx.deps.arm_mcp
         T   = ctx.deps.get_T_base_cam()
 
-        color, depth, ci, ds = capture_realsense()
+        color, depth, ci, ds = ctx.deps._capture()
         h, w = color.shape[:2]
         det = ctx.deps.detector.locate( encode_jpeg(color), description)
         if det is None:
@@ -640,7 +567,6 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         bx, by, bz = base_pos["x"], base_pos["y"], base_pos["z"]
         hover_z  = round(bz + hover_height_m, 4)
 
-        mcp_url  = ctx.deps.arm_mcp_url
         j_hover  = get_joints_for_pose("hover", bx, by, hover_z, _PICK_SEED, arm_mcp_url=None)
         if j_hover is None:
             return {"success": False, "error": f"IK failed for hover ({bx:.3f},{by:.3f},{hover_z:.3f})"}
@@ -665,7 +591,7 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         if ctx.deps.detector is None:
             return {"success": False, "error": "GOOGLE_API_KEY not set"}
 
-        color, _, _, _ = capture_realsense()
+        color, _, _, _ = ctx.deps._capture()
         det = ctx.deps.detector.locate(
             encode_jpeg(color),
             "any obstacle or object in the robot arm's movement path",

@@ -44,6 +44,7 @@ class VisionAgentConfig(AgentModelConfig):
     pick_x_offset_m: float = 0.0   # correction offset applied to detected X position (tune to fix systematic grasp error)
     pick_y_offset_m: float = 0.0   # correction offset applied to detected Y position
     min_drop_z_m: float = 0.30     # minimum absolute Z (metres) for item release — prevents collision with table clutter
+    place_depth_offset_m: float = 0.0  # subtract this from detected place target depth (negative = farther away)
 
 
 class AgentsConfig(BaseModel):

@@ -34,6 +34,7 @@ from cobot.cli.renderer import (
     print_reasoning as _print_reasoning,
     print_tool_call,
     print_tool_result,
+    print_user_message,
     print_welcome,
 )
 from cobot.cli.session import CobotSession
@@ -133,6 +134,36 @@ async def _cmd_ingest(session: CobotSession, path: str) -> None:
 # Slash commands
 # ---------------------------------------------------------------------------
 
+async def _cmd_vision_debug(session: CobotSession, arg: str) -> None:
+    """Start or stop the live OpenCV camera debug window."""
+    from cobot.camera.stream import CameraStream
+
+    currently_on = session.camera_stream is not None and session.camera_stream._debug_enabled
+
+    want_on = {"on": True, "off": False, "toggle": not currently_on}.get(arg, not currently_on)
+
+    if want_on:
+        if session.camera_stream is None:
+            fps = 10
+            session.camera_stream = CameraStream(fps=fps)
+            session.camera_stream.start()
+            # Push stream reference into live vision deps if session is connected
+            if session.deps and session.deps.vision_deps:
+                session.deps.vision_deps.camera_stream = session.camera_stream
+            console.print(f"  [dim]Camera stream started at {fps}fps[/dim]")
+        session.camera_stream.enable_debug_window()
+        console.print("  [green]✓[/green]  Vision debug window opened  [dim](press Q in window to close)[/dim]")
+    else:
+        if session.camera_stream is not None:
+            session.camera_stream.stop()
+            session.camera_stream = None
+            if session.deps and session.deps.vision_deps:
+                session.deps.vision_deps.camera_stream = None
+            console.print("  [yellow]Vision debug stopped — camera released[/yellow]")
+        else:
+            console.print("  [dim]Vision debug is not active[/dim]")
+
+
 async def _cmd_reload_config(session: CobotSession) -> None:
     """Reload cobot.yaml and reconnect MCP servers."""
     from cobot.config import load_config
@@ -168,6 +199,7 @@ _HELP_TEXT = """
   [cyan]/calibrate[/cyan]            Run hand-eye calibration (moves arm through 4 poses)
   [cyan]/calibrate --check[/cyan]   Report current calibration error without saving
   [cyan]/ingest[/cyan] [dim][path][/dim]       Index robot manuals into RAG knowledge base
+  [cyan]/vision-debug[/cyan] [dim][on|off][/dim]  Toggle live OpenCV camera window with detection overlays
   [cyan]/reload-config[/cyan]        Reload cobot.yaml and reconnect MCP servers
   [cyan]/reconnect[/cyan]           Reconnect to robot MCP servers
   [cyan]/clear[/cyan]               Clear the screen
@@ -217,6 +249,10 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
             path = parts[1] if len(parts) > 1 else "./manuals"
             await _cmd_ingest(session, path)
 
+        case "/vision-debug":
+            arg = parts[1].lower() if len(parts) > 1 else "toggle"
+            await _cmd_vision_debug(session, arg)
+
         case "/reload-config":
             await _cmd_reload_config(session)
 
@@ -252,7 +288,7 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
 
     agent = build_orchestrator(session.cfg)
     deps = session.deps or _make_offline_deps(session)
-    console.print()
+    print_user_message(text)
 
     import json
 
@@ -322,7 +358,7 @@ async def _handle_agent_message(text: str, session: CobotSession) -> None:
                                     ok = result_dict.get("ok", True) if isinstance(result_dict, dict) else True
                                 except Exception:
                                     pass
-                            print_tool_result(ok, str(content)[:120])
+                            print_tool_result(ok, str(content)[:160], tool_name=part.tool_name)
                             live = Live(
                                 Spinner("dots", text="[dim]thinking…[/dim]"),
                                 console=console,

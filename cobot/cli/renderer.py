@@ -181,16 +181,23 @@ def print_welcome(
 # Tool call / result display
 # ---------------------------------------------------------------------------
 
+# Orchestrator-level tools — everything else is treated as nested (depth 1)
+_TOP_LEVEL_TOOLS = {"run_vision_task", "run_robotic_task", "run_config_task"}
+
+
+def _tool_depth(tool_name: str) -> int:
+    return 0 if tool_name in _TOP_LEVEL_TOOLS else 1
+
+
 def print_reasoning(text: str, max_chars: int = 400) -> None:
     """Display model reasoning / thinking text in a muted style."""
     truncated = text[:max_chars] + ("…" if len(text) > max_chars else "")
-    # Wrap in a subtle left-border panel
     from rich.padding import Padding
     console.print(
         Padding(
             Panel(
                 Text(truncated, style="dim italic"),
-                border_style="dim cyan",
+                border_style="dim",
                 padding=(0, 1),
                 expand=False,
             ),
@@ -200,18 +207,46 @@ def print_reasoning(text: str, max_chars: int = 400) -> None:
 
 
 def print_tool_call(tool_name: str, args: dict) -> None:
-    args_str = ", ".join(f"{k}={repr(v)}" for k, v in args.items())
-    console.print(f"  [dim]▸[/dim] [cyan]{tool_name}[/cyan][dim]({args_str})[/dim]")
+    depth = _tool_depth(tool_name)
+    if depth == 0:
+        # Top-level orchestrator call — prominent, full cyan
+        console.print(
+            f"\n  [bold cyan]▶  {tool_name}[/bold cyan]"
+            f"[dim]({', '.join(f'{k}={repr(v)}' for k,v in args.items())})[/dim]"
+        )
+    else:
+        # Nested agent tool call — indented, blue
+        console.print(
+            f"     [blue]▸[/blue] [cyan]{tool_name}[/cyan]"
+            f"[dim]({', '.join(f'{k}={repr(v)}' for k,v in args.items())})[/dim]"
+        )
 
 
-def print_tool_result(ok: bool, summary: str) -> None:
-    icon = "✓" if ok else "✗"
-    color = "green" if ok else "red"
-    console.print(f"  [{color}]{icon}[/{color}] [dim]{summary[:120]}[/dim]")
+def print_tool_result(ok: bool, summary: str, tool_name: str = "") -> None:
+    depth  = _tool_depth(tool_name) if tool_name else 1
+    icon   = "✓" if ok else "✗"
+    color  = "green" if ok else "red"
+    indent = "  " if depth == 0 else "     "
+    body   = summary[:160]
+    if ok:
+        console.print(f"{indent}[bold {color}]{icon}[/bold {color}] {body}")
+    else:
+        console.print(f"{indent}[bold {color}]{icon}[/bold {color}] [dim]{body}[/dim]")
+
+
+def print_user_message(text: str) -> None:
+    console.print(f"\n  [bold white]you[/bold white]  [white]{text}[/white]\n")
 
 
 def print_agent_response(text: str) -> None:
-    console.print(Markdown(text))
+    from rich.padding import Padding
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print(
+        Padding(Markdown(text), (0, 2)),
+    )
+    console.print(Rule(style="dim"))
+    console.print()
 
 
 def print_error(message: str) -> None:

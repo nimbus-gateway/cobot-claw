@@ -26,7 +26,7 @@ except ImportError:
 
 APPROACH_Z_OFFSET = 0.12   # metres above object for pre-grasp approach
 PICK_Z_OFFSET     = 0.02   # metres above detected surface for grasp
-LIFT_Z_OFFSET     = 0.20   # metres above object after grasping
+LIFT_Z_OFFSET     = 0.18   # metres above object after grasping
 
 # DH parameters: (d, a, alpha) — theta is the joint variable
 _DH = [
