@@ -44,6 +44,7 @@ def build_robotic_agent(cfg: CobotConfig) -> Agent:
         "For end-effectors, call list_tool_mcps first to discover what is attached, "
         "then use call_tool_action to operate it.\n"
         "Always check arm status before moving.\n"
+        "Always pass speed and accel explicitly in every move_joints call — choose values appropriate to the task context.\n"
         "Return a RoboticAgentResult when done."
     )
 
@@ -83,16 +84,16 @@ def build_robotic_agent(cfg: CobotConfig) -> Agent:
         ctx: RunContext[RoboticAgentDeps],
         joint_index: int,
         delta_degrees: float,
-        speed: float = 0.5,
-        accel: float = 0.8,
+        speed: float,   # EXPERIMENT: no default — model must choose based on context
+        accel: float,   # EXPERIMENT: no default — model must choose based on context
     ) -> dict:
         """
         Move a single joint by a relative amount in degrees.
 
         joint_index   – 0=base, 1=shoulder, 2=elbow, 3=wrist_1, 4=wrist_2, 5=wrist_3
         delta_degrees – how many degrees to move (positive or negative)
-        speed         – joint speed in rad/s (default 0.5)
-        accel         – joint accel in rad/s² (default 0.8)
+        speed         – joint speed in rad/s — choose based on workspace context
+        accel         – joint accel in rad/s² — choose based on workspace context
 
         Use this for requests like "move the base by 5 degrees" or "rotate elbow -10 degrees".
         """
@@ -157,8 +158,8 @@ def build_robotic_agent(cfg: CobotConfig) -> Agent:
     async def move_to_pose(
         ctx: RunContext[RoboticAgentDeps],
         pose_name: str,
-        speed: float = 1.05,
-        accel: float = 1.4,
+        speed: float,   # EXPERIMENT: no default — model must choose based on context
+        accel: float,   # EXPERIMENT: no default — model must choose based on context
     ) -> dict:
         """Move arm to a named pose (home, retract, reach_forward, etc.)."""
         return await ctx.deps.arm_mcp.call_tool("move_named_pose", {

@@ -34,7 +34,7 @@ _LOGO = """\
 _PROVIDER_ICONS = {
     "anthropic": ("🟣", "Anthropic"),
     "openai":    ("🟢", "OpenAI"),
-    "local":     ("🔵", "Local (Ollama)"),
+    "local":     ("🔵", "Local (vLLM)"),
 }
 
 
