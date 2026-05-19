@@ -17,6 +17,8 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "pyyaml>=6.0",
     "structlog>=24.0",
+    "opencv-python>=4.9",
+    "pyrealsense2>=2.54",
 ]
 
 [project.optional-dependencies]

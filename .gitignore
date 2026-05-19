@@ -17,6 +17,9 @@ wheels/
 .installed.cfg
 lib/
 lib64/
+*.MOV
+*.mp4
+*.pdf
 
 # Virtual environments
 .venv/

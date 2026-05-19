@@ -18,9 +18,6 @@ class RoboticAgentDeps:
     cfg: CobotConfig
 
 
-# Backward-compat alias
-ScenarioAgentDeps = RoboticAgentDeps
-
 
 @dataclass
 class ConfigAgentDeps:

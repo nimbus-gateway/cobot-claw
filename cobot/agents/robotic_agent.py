@@ -29,9 +29,6 @@ class RoboticAgentResult(BaseModel):
     summary: str
 
 
-# Backward-compat alias so existing test imports don't break immediately
-ScenarioResult = RoboticAgentResult
-
 
 def build_robotic_agent(cfg: CobotConfig) -> Agent:
     _DEFAULT_ROBOTIC_PROMPT = (
@@ -210,7 +207,3 @@ def build_robotic_agent(cfg: CobotConfig) -> Agent:
         return await ctx.deps.tool_mcps[tool].call_tool(action, params or {})
 
     return agent
-
-
-# Backward-compat alias
-build_scenario_agent = build_robotic_agent
