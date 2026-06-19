@@ -22,6 +22,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
+from cobot.cli.commands.artistic import cmd_artistic
 from cobot.cli.commands.teach import cmd_teach
 from cobot.cli.commands.scenario import cmd_run, cmd_scenarios
 from cobot.cli.commands.status import cmd_status
@@ -199,6 +200,7 @@ _HELP_TEXT = """
   [cyan]/calibrate[/cyan]            Run hand-eye calibration (moves arm through 4 poses)
   [cyan]/calibrate --check[/cyan]   Report current calibration error without saving
   [cyan]/ingest[/cyan] [dim][path][/dim]       Index robot manuals into RAG knowledge base
+  [cyan]/artistic[/cyan]             Enter artistic mode — choreography, gesture, theatre, ritual
   [cyan]/vision-debug[/cyan] [dim][on|off][/dim]  Toggle live OpenCV camera window with detection overlays
   [cyan]/reload-config[/cyan]        Reload cobot.yaml and reconnect MCP servers
   [cyan]/reconnect[/cyan]           Reconnect to robot MCP servers
@@ -252,6 +254,9 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
         case "/vision-debug":
             arg = parts[1].lower() if len(parts) > 1 else "toggle"
             await _cmd_vision_debug(session, arg)
+
+        case "/artistic":
+            await cmd_artistic(session)
 
         case "/reload-config":
             await _cmd_reload_config(session)

@@ -47,12 +47,18 @@ class VisionAgentConfig(AgentModelConfig):
     place_depth_offset_m: float = 0.0  # subtract this from detected place target depth (negative = farther away)
 
 
+class ArtisticAgentConfig(AgentModelConfig):
+    skills_path: str = "./cobot/agents/artistic_agent/skills"
+    active_skills: list[str] = ["choreography", "gesture"]
+
+
 class AgentsConfig(BaseModel):
     orchestrator: AgentModelConfig
     scenario: AgentModelConfig
     config: AgentModelConfig
     safety: SafetyAgentConfig
     vision: VisionAgentConfig
+    artistic: ArtisticAgentConfig = ArtisticAgentConfig(model="claude-sonnet-4-6")
 
 
 class ScenariosConfig(BaseModel):

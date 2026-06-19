@@ -8,7 +8,7 @@ from cobot.cli.session import CobotSession
 
 SLASH_COMMANDS = [
     "/help", "/status", "/poses", "/scenarios",
-    "/run", "/teach", "/ingest", "/reconnect",
+    "/run", "/teach", "/artistic", "/ingest", "/reconnect",
     "/agent", "/model", "/fleet", "/config",
     "/history", "/clear", "/exit",
 ]

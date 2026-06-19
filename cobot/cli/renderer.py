@@ -42,8 +42,8 @@ def print_welcome(
     cfg: "CobotConfig",
     robot: "RobotConfig",
     connected: bool,
-    recent_scenarios: list[str] | None = None,
     mcp_status: dict[str, bool] | None = None,
+    recent_scenarios: list[str] | None = None,  # unused — kept for call-site compat
 ) -> None:
     cwd = Path.cwd()
     mcp_status = mcp_status or {}
@@ -119,11 +119,13 @@ def print_welcome(
         ("orchestrator", cfg.agents.orchestrator.model,
          "Routes commands, delegates to specialist agents"),
         ("robotic",      cfg.agents.scenario.model,
-         "All robot interactions — status, moves, tools, scenarios"),
+         "Robot interactions — status, moves, tools, scenarios"),
         ("vision",       cfg.agents.vision.model,
-         "Processes 3D camera input for spatial perception and manipulation"),
+         "3D camera perception and object manipulation"),
         ("config",       cfg.agents.config.model,
          "Manual Q&A, teach-by-demo, scenario authoring"),
+        ("artistic",     cfg.agents.artistic.model,
+         "Choreography, gesture, theatre, ritual  [dim]/artistic[/dim]"),
     ]
 
     agents_table = Table(show_header=False, box=None, padding=(0, 2), show_edge=False)
@@ -133,24 +135,14 @@ def print_welcome(
     for name, model, desc in _AGENT_DESCRIPTIONS:
         agents_table.add_row(name, model, desc)
 
-    recent_header = Text("\nRecent Scenarios\n", style="bold")
-    if recent_scenarios:
-        recent_rows = Table(show_header=False, box=None, padding=(0, 2), show_edge=False)
-        recent_rows.add_column(style="cyan")
-        for s in recent_scenarios[:5]:
-            recent_rows.add_row(s)
-        recent_body = recent_rows
-    else:
-        recent_body = Text("  No recent scenarios", style="dim")
-
     tips_header = Text("\nCommands\n", style="bold")
     tips = Table(show_header=False, box=None, padding=(0, 1), show_edge=False)
     tips.add_column(style="cyan",  no_wrap=True)
     tips.add_column(style="dim")
     tips.add_row("/status",    "robot state")
-    tips.add_row("/scenarios", "list saved scenarios")
     tips.add_row("/run",       "<name> [--dry]  execute scenario")
-    tips.add_row("/teach",     "jog joints with keyboard, teach the robot")
+    tips.add_row("/teach",     "jog joints, record waypoints")
+    tips.add_row("/artistic",  "enter artistic mode")
     tips.add_row("/help",      "all commands")
 
     hint = Text("\nOr just type naturally — the agent will figure it out.", style="dim italic")
@@ -159,8 +151,6 @@ def print_welcome(
         Group(
             Text("Agents\n", style="bold"),
             agents_table,
-            recent_header,
-            recent_body,
             tips_header,
             tips,
             hint,
