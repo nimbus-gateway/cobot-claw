@@ -29,6 +29,7 @@ Under the hood, cobot-claw is a **multi-agent AI system**. Think of it as a smal
 - **Vision Agent** — the eyes. Uses an Intel RealSense camera and a vision LLM (Gemini ER or any OpenAI-compatible vision endpoint) to locate objects in 3D space, compute inverse kinematics, and execute pick, pick-and-place, and point-to operations directly — no scenario YAML needed.
 - **Safety Monitor** — the supervisor. Watches the robot continuously and intervenes if anything looks dangerous.
 - **Config Agent** — the technician. Answers questions from robot manuals and handles teach-by-demo scenario recording.
+- **Artistic Agent** — the performer. Treats robot arm movement as artistic expression — choreography, gesture, theatre, ritual, improvisation, and installation. Invoked via `/artistic`; never auto-routed by the Orchestrator.
 
 Each agent is powered by a large language model (LLM). cobot-claw works with **local models** running on your own hardware via [Ollama](https://ollama.com) — keeping your data private — as well as **cloud APIs** (OpenAI, Anthropic) when you need more capability. Switching between them is a one-line change in the config file.
 
@@ -101,6 +102,12 @@ agents:
     ik_solver: robot              # "robot" = use arm MCP IK | "local" = analytical
     pick_x_offset_m: 0.0          # tune to correct systematic grasp X error
     pick_y_offset_m: 0.0          # tune to correct systematic grasp Y error
+  artistic:
+    model: claude-sonnet-4-6
+    active_skills:               # any subset of the available skills
+      - choreography
+      - gesture
+    skills_path: ./cobot/agents/artistic_agent/skills
 ```
 
 ### Switching to OpenAI or Anthropic
@@ -129,15 +136,71 @@ Full schema reference: [cobot/config.py](cobot/config.py)
 
 ---
 
-## CLI
+## Running
+
+### One-command startup (recommended)
+
+`start.sh` launches the UR ROS 2 driver, both MCP servers, and cobot-claw in the correct order with a single command:
 
 ```bash
-cobot-claw                        # start interactive REPL
-cobot-claw --robot ur5e           # select a specific robot from fleet
-cobot-claw status                 # print robot status and exit
-cobot-claw run pick_place         # execute a scenario directly
-cobot-claw run pick_place --dry-run  # preview steps without moving
+chmod +x start.sh
+
+./start.sh                    # uses cobot.yaml by default
+./start.sh cobot.local.yaml   # pass a specific config file
 ```
+
+What it does:
+1. Starts the UR ROS 2 driver in the background (waits 8 s for it to come up)
+2. Starts the arm MCP server in the background (ROS sourced, `ROS_DOMAIN_ID=42`)
+3. Starts the gripper MCP server in the background
+4. Waits 4 s for MCP servers to be ready
+5. Launches `cobot-claw` in the foreground
+
+Background process logs are written to `ur_driver.log`, `arm_mcp.log`, and `gripper_mcp.log` in the repo root. `Ctrl+C` shuts everything down cleanly.
+
+### Manual startup
+
+If you prefer separate terminals:
+
+**Terminal 1 — UR ROS 2 driver:**
+```bash
+source /opt/ros/jazzy/setup.bash
+ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.1.2 headless_mode:=true
+```
+
+**Terminal 2 — Arm MCP server:**
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=42
+python tools/ure3/ure3_arm_mcp.py
+# Listening at http://0.0.0.0:8765/mcp
+```
+
+**Terminal 3 — Gripper MCP server:**
+```bash
+ROBOT_IP=192.168.1.2 python tools/gripper/server.py
+# Listening at http://0.0.0.0:8001/mcp
+```
+
+**Terminal 4 — cobot-claw:**
+```bash
+cobot-claw --config cobot.yaml
+```
+
+### CLI flags
+
+```bash
+cobot-claw                            # start interactive REPL (uses cobot.yaml)
+cobot-claw --config cobot.local.yaml  # use a specific config file
+cobot-claw --robot ur5e               # select a specific robot from fleet
+cobot-claw status                     # print robot status and exit
+cobot-claw run pick_place             # execute a scenario directly
+cobot-claw run pick_place --dry-run   # preview steps without moving
+```
+
+---
+
+## CLI
 
 ### REPL Slash Commands
 
@@ -149,6 +212,11 @@ cobot-claw run pick_place --dry-run  # preview steps without moving
 | `/run <name> --dry` | Preview scenario steps without moving |
 | `/teach <name>` | Record arm movements and save as scenario |
 | `/teach <name> --dur 60` | Teach mode with custom duration (seconds) |
+| `/calibrate` | Run hand-eye calibration (moves arm through 4 poses, saves result) |
+| `/calibrate --check` | Report current calibration error without saving |
+| `/artistic` | Enter artistic mode — choreography, gesture, theatre, ritual |
+| `/vision-debug [on\|off]` | Toggle live OpenCV camera window with detection overlays |
+| `/reload-config` | Reload cobot.yaml and reconnect MCP servers |
 | `/ingest [path]` | Index robot manuals into RAG knowledge base |
 | `/reconnect` | Reconnect to robot MCP servers |
 | `/clear` | Clear the screen |
@@ -178,73 +246,16 @@ The CLI starts even if MCP servers are unreachable. Natural language commands st
 
 ---
 
-## Project Structure
-
-```
-cobot-claw/
-├── cobot.yaml                        # Fleet, LLM, agent config
-├── pyproject.toml
-├── docs/
-│   └── claw_welcome.png              # Welcome screen preview
-├── cobot/
-│   ├── config.py                     # Pydantic config schema + loader
-│   ├── llm.py                        # LLM client factory (local / OpenAI / Anthropic)
-│   ├── logging.py                    # structlog setup
-│   ├── mcp/
-│   │   ├── client.py                 # Async MCPClient (streamable-http)
-│   │   └── perception_contract.py    # PerceptionClient stub
-│   ├── scenarios/
-│   │   ├── schema.py                 # Pydantic step types + discriminated union
-│   │   ├── executor.py               # Deterministic scenario executor
-│   │   └── store/
-│   │       └── pick_place.yaml       # Example pick-and-place scenario
-│   ├── agents/
-│   │   ├── deps.py                   # RoboticAgentDeps, ConfigAgentDeps, VisionAgentDeps
-│   │   ├── robotic_agent.py          # Robotic Agent (dynamic tool discovery)
-│   │   ├── config_agent.py           # Config Agent (RAG + teach mode)
-│   │   ├── orchestrator.py           # Orchestrator Agent + OrchestratorDeps
-│   │   └── vision_agent/
-│   │       ├── agent.py              # Vision Agent tools (pick, pick-and-place, point)
-│   │       ├── camera.py             # RealSense capture + depth utilities
-│   │       ├── detector.py           # VisionDetector protocol + Gemini/OpenAI backends
-│   │       ├── kinematics.py         # UR3e analytical IK + robot MCP IK with fallback
-│   │       └── scenario.py           # Vision-guided scenario YAML generator
-│   ├── cli/
-│   │   ├── app.py                    # Typer entry point (cobot-claw command)
-│   │   ├── repl.py                   # Interactive REPL loop + agent streaming
-│   │   ├── renderer.py               # Rich welcome screen, tool call display
-│   │   ├── session.py                # CobotSession dataclass
-│   │   ├── completer.py              # Tab completion for slash commands + scenarios
-│   │   └── commands/
-│   │       ├── status.py             # /status command
-│   │       └── scenario.py           # /run, /scenarios commands
-│   └── rag/
-│       └── pipeline.py               # RAGPipeline stub (Phase 6 replaces this)
-├── tools/
-│   ├── ure3/
-│   │   └── ur3e_arm_mcp.py           # UR3e arm MCP server (FastMCP + ROS2)
-│   └── gripper/
-│       ├── server.py                 # Robotiq gripper MCP server
-│       └── robotiq_driver.py
-├── tests/                            # pytest suite
-└── scripts/
-    ├── check_phase1.py
-    └── check_phase2.py
-```
-
----
-
 ## MCP Servers
 
-Both servers are standalone — start them independently of the CLI.
+Both servers are standalone — `start.sh` manages them automatically, or start them independently.
 
 ### Arm MCP (requires ROS 2 + UR driver)
 
 ```bash
-# On Linux / WSL2
 source /opt/ros/jazzy/setup.bash
 export ROS_DOMAIN_ID=42
-python tools/ure3/ur3e_arm_mcp.py
+python tools/ure3/ure3_arm_mcp.py
 # Listening at http://0.0.0.0:8765/mcp
 ```
 
@@ -259,7 +270,76 @@ ROBOT_IP=192.168.1.2 python tools/gripper/server.py
 
 Key tools: `activate`, `open`, `close`, `move`, `stop`, `get_status`, `set_speed`, `set_force`
 
+The gripper MCP communicates via URScript directly to TCP port 30002 — no ROS dependency. Sending URScript stops UR External Control; call `recover_external_control` on the arm MCP after any gripper command before issuing arm commands.
+
 The Robotic Agent discovers these actions automatically via `list_tool_mcps` — replace or add any end-effector MCP without touching agent code.
+
+---
+
+## Vision and Hand-Eye Calibration
+
+The Vision Agent uses an Intel RealSense camera (accessed directly via `pyrealsense2`) and a vision LLM for object detection. Before use, run hand-eye calibration to align the camera frame with the robot's TCP frame.
+
+```
+> /calibrate          # moves arm through 4 poses, computes and saves calibration
+> /calibrate --check  # report reprojection error for the existing calibration
+```
+
+Calibration data is stored in `cobot/agents/vision_agent/calibration.json`. After calibration succeeds:
+
+```
+> pick the white block
+> pick the bottle and place it on the brown box
+> point to the red cup
+> what do you see on the table?
+```
+
+Toggle the live camera debug window at any time:
+```
+> /vision-debug on
+> /vision-debug off
+```
+
+---
+
+## Artistic Agent
+
+The Artistic Agent treats robot arm movement as artistic expression. It is invoked via `/artistic` and never auto-routed by the Orchestrator.
+
+```
+> /artistic
+> perform a slow, contemplative greeting
+> improvise a response to my presence
+> perform a ritual of welcome
+```
+
+Skills define the agent's artistic disposition for a session. Available skills:
+
+| Skill | Description |
+|---|---|
+| `choreography` | Structured movement sequences with compositional intent |
+| `gesture` | Communicative movement directed at a person or object |
+| `theatre` | Narrative arc, character, dramatic timing |
+| `ritual` | Repetition, ceremony, symbolic action |
+| `improvisation` | Emergent movement in response to the environment |
+| `installation` | Continuous, ambient movement for unattended spaces |
+| `collaborative` | Co-authorship — pauses to invite human contribution |
+
+Configure active skills in `cobot.yaml`:
+
+```yaml
+agents:
+  artistic:
+    model: claude-sonnet-4-6
+    active_skills:
+      - choreography
+      - gesture
+      - improvisation
+```
+
+New skills require only a new `.md` file in `cobot/agents/artistic_agent/skills/` and a config entry — no code changes.
+
+The Artistic Agent uses the Vision Agent (`observe_space`) to detect audience presence and respond to spatial context during improvisation and installation performances.
 
 ---
 
@@ -299,7 +379,7 @@ Supported step types: `move_named_pose`, `move_joints`, `move_tcp_pose`, `tool_a
 
 ---
 
-## Manual Q&A and Teach Mode (Phase 6)
+## Manual Q&A and Teach Mode
 
 Ask natural language questions about your robot, or record arm movements directly from the REPL.
 
@@ -347,6 +427,79 @@ You can also ask conversationally:
 
 ---
 
+## Project Structure
+
+```
+cobot-claw/
+├── cobot.yaml                        # Fleet, LLM, agent config
+├── start.sh                          # One-command launcher (driver + MCPs + CLI)
+├── pyproject.toml
+├── docs/
+│   └── claw_welcome.png              # Welcome screen preview
+├── cobot/
+│   ├── config.py                     # Pydantic config schema + loader
+│   ├── llm.py                        # LLM client factory (local / OpenAI / Anthropic)
+│   ├── logging.py                    # structlog setup
+│   ├── mcp/
+│   │   ├── client.py                 # Async MCPClient (streamable-http)
+│   │   └── perception_contract.py    # PerceptionClient stub
+│   ├── scenarios/
+│   │   ├── schema.py                 # Pydantic step types + discriminated union
+│   │   ├── executor.py               # Deterministic scenario executor
+│   │   └── store/                    # Saved scenario YAMLs
+│   ├── agents/
+│   │   ├── deps.py                   # Shared deps dataclasses
+│   │   ├── robotic_agent.py          # Robotic Agent (dynamic tool discovery)
+│   │   ├── config_agent.py           # Config Agent (RAG + teach mode)
+│   │   ├── orchestrator.py           # Orchestrator Agent
+│   │   ├── vision_agent/
+│   │   │   ├── agent.py              # Vision Agent tools (pick, pick-and-place, point)
+│   │   │   ├── camera.py             # RealSense capture + depth utilities
+│   │   │   ├── calibrate.py          # Hand-eye calibration (4-pose routine)
+│   │   │   ├── detector.py           # VisionDetector protocol + Gemini/OpenAI backends
+│   │   │   ├── kinematics.py         # UR3e analytical IK + robot MCP IK with fallback
+│   │   │   ├── scenario.py           # Vision-guided scenario YAML generator
+│   │   │   └── calibration.json      # Saved hand-eye calibration
+│   │   └── artistic_agent/
+│   │       ├── agent.py              # Artistic Agent (movement as expression)
+│   │       ├── deps.py               # ArtisticAgentDeps
+│   │       ├── interpret.py          # Cultural/emotional interpretation sub-agent
+│   │       └── skills/               # Skill definition .md files
+│   │           ├── choreography.md
+│   │           ├── gesture.md
+│   │           ├── theatre.md
+│   │           ├── ritual.md
+│   │           ├── improvisation.md
+│   │           ├── installation.md
+│   │           └── collaborative.md
+│   ├── cli/
+│   │   ├── app.py                    # Typer entry point (cobot-claw command)
+│   │   ├── repl.py                   # Interactive REPL loop + agent streaming
+│   │   ├── renderer.py               # Rich welcome screen, tool call display
+│   │   ├── session.py                # CobotSession dataclass
+│   │   ├── completer.py              # Tab completion for slash commands + scenarios
+│   │   └── commands/
+│   │       ├── status.py             # /status command
+│   │       ├── scenario.py           # /run, /scenarios commands
+│   │       ├── calibrate.py          # /calibrate command
+│   │       └── artistic.py           # /artistic command
+│   └── rag/
+│       └── pipeline.py               # RAGPipeline (ChromaDB + LlamaIndex)
+├── tools/
+│   ├── ure3/
+│   │   └── ure3_arm_mcp.py           # UR3e arm MCP server (FastMCP + ROS2)
+│   └── gripper/
+│       ├── server.py                 # Robotiq gripper MCP server
+│       ├── robotiq_driver.py         # Low-level URScript driver
+│       └── Gripper.script            # URScript template
+├── tests/                            # pytest suite
+└── scripts/
+    ├── check_phase1.py
+    └── check_phase2.py
+```
+
+---
+
 ## Verification
 
 ```bash
@@ -377,7 +530,8 @@ pytest -v
 | 5 | CLI — REPL, slash commands, streaming output | **Done** |
 | 6 | Config Agent RAG + `/teach` (real ChromaDB/LlamaIndex) | **Done** |
 | 7 | Vision Agent — RealSense + Gemini ER + analytical IK + pick/place | **Done** |
-| 8 | Safety Monitor | Future |
+| 8 | Artistic Agent — movement as expression, skill system, cultural interpretation | **Done** |
+| 9 | Safety Monitor | Future |
 
 Full implementation details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 
