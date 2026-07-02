@@ -1,0 +1,56 @@
+llm:
+  # provider options: local (Ollama) | openai | anthropic
+  provider: anthropic
+  base_url: https://api.anthropic.com/v1/   # only needed for provider: local (Ollama)
+  api_key: ""                               # or set ANTHROPIC_API_KEY env var
+                                            # for openai: set OPENAI_API_KEY env var
+
+fleet:
+  - name: ur3e
+    model_type: ur3e
+    ip: 192.168.1.2                         # robot controller IP
+    arm_mcp_url: http://localhost:8765/mcp  # arm MCP server (tools/ure3/ure3_arm_mcp.py)
+    gripper_mcp_url: http://localhost:8001/mcp  # gripper MCP server (tools/gripper/server.py)
+
+agents:
+  orchestrator:
+    model: claude-sonnet-4-6
+  scenario:
+    model: claude-sonnet-4-6
+  config:
+    model: claude-sonnet-4-6
+  safety:
+    model: claude-haiku-4-5-20251001
+    poll_interval_sec: 1.0
+    alert_threshold: WARNING
+  artistic:
+    model: claude-sonnet-4-6
+    system_prompt: ""                       # leave empty to use the built-in system prompt
+    skills_path: ./cobot/agents/artistic_agent/skills
+    active_skills:
+      - choreography
+      - gesture
+      - collaborative
+
+  vision:
+    model: claude-haiku-4-5-20251001
+    detector: gemini                        # "gemini" | "openai_vision"
+    google_api_key: ""                      # required for detector: gemini — or set GOOGLE_API_KEY env var
+    ik_solver: robot                        # "robot" = arm MCP IK | "local" = analytical solver
+    pick_x_offset_m: 0.0                   # tune to correct systematic grasp X error (positive = away from robot base)
+    pick_y_offset_m: 0.0                   # tune to correct systematic grasp Y error (positive = robot's right)
+    min_drop_z_m: 0.30                     # minimum absolute Z for item release (metres) — prevents table collision
+    place_depth_offset_m: 0.02             # subtract from detected place target depth; increase to push drop further back into box
+
+scenarios:
+  store_path: ./cobot/scenarios/store
+
+rag:
+  manuals_path: ./manuals
+  db_path: ./chroma_db
+  chunk_size: 512
+  chunk_overlap: 64
+
+observability:
+  enabled: false
+  token: ""                                 # Logfire project token — or set LOGFIRE_TOKEN env var
