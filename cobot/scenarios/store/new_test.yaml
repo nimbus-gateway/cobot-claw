@@ -1,0 +1,105 @@
+name: new_test
+description: Recorded via /teach (11 steps)
+robot: ur3e
+steps:
+- type: tool_action
+  tool: gripper
+  action: close
+  params: &id001
+    speed: 100
+    force: 100
+  arm_recovery_sec: 3.0
+- type: tool_action
+  tool: gripper
+  action: open
+  params: &id002
+    speed: 100
+    force: 100
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints:
+  - 0.2852566
+  - -1.7974659
+  - -0.7796597
+  - -1.5355025
+  - 1.5264697
+  - 3.3404136
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 1.376958
+  - -1.797505
+  - -0.779711
+  - -1.53553
+  - 1.526509
+  - 3.340369
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 1.377012
+  - -2.449218
+  - -0.779711
+  - -1.535515
+  - 1.526502
+  - 3.340401
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: tool_action
+  tool: gripper
+  action: close
+  params: *id001
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints:
+  - 1.377012
+  - -2.449218
+  - -0.779711
+  - -1.535515
+  - 1.526502
+  - 3.340401
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 2.048304
+  - -2.192766
+  - -0.779712
+  - -1.535526
+  - 1.526518
+  - 3.340429
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: tool_action
+  tool: gripper
+  action: open
+  params: *id002
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints:
+  - 2.044154
+  - -2.457778
+  - -0.779755
+  - -1.535502
+  - 1.526553
+  - 3.340425
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 2.144074
+  - -1.957366
+  - -0.778623
+  - -1.535079
+  - 1.526669
+  - 3.340309
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0

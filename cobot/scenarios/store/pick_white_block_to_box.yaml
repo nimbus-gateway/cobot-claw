@@ -1,0 +1,91 @@
+name: pick_white_block_to_box
+description: "Vision pick-and-place: 'white block' \u2192 'transparent box'. pick={'x':\
+  \ 0.2396, 'y': 0.358, 'z': 0.1658}  place={'x': -0.1492, 'y': 0.4743, 'z': 0.1875}"
+robot: ur3e
+steps:
+- type: move_named_pose
+  pose: home
+  speed: 0.5
+  accel: 0.8
+- type: tool_action
+  tool: gripper
+  action: open
+  params:
+    speed: 100
+    force: 100
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints: &id001
+  - 1.289952
+  - -2.049518
+  - -1.049337
+  - -1.611176
+  - 1.571989
+  - 2.859074
+  speed: 0.4
+  accel: 0.6
+  blend_radius: 0.0
+- type: visual_servo
+  pick_description: white block
+  approach_z: 0.2858
+  grasp_z: 0.2058
+  fallback_joints:
+  - 1.289723
+  - -2.096477
+  - -1.356812
+  - -1.256742
+  - 1.572091
+  - 2.85948
+  speed: 0.05
+  accel: 0.2
+  threshold_mm: 2.0
+- type: tool_action
+  tool: gripper
+  action: close
+  params:
+    speed: 100
+    force: 100
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints: *id001
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_joints
+  joints: &id002
+  - 1.289723
+  - -2.096477
+  - -1.356812
+  - -1.256742
+  - 1.572091
+  - 2.85948
+  speed: 0.4
+  accel: 0.6
+  blend_radius: 0.0
+- type: move_joints
+  joints:
+  - 1.289723
+  - -2.096477
+  - -1.356812
+  - -1.256742
+  - 1.572091
+  - 2.85948
+  speed: 0.15
+  accel: 0.3
+  blend_radius: 0.0
+- type: tool_action
+  tool: gripper
+  action: open
+  params:
+    speed: 100
+    force: 100
+  arm_recovery_sec: 3.0
+- type: move_joints
+  joints: *id002
+  speed: 0.3
+  accel: 0.5
+  blend_radius: 0.0
+- type: move_named_pose
+  pose: home
+  speed: 0.5
+  accel: 0.8
