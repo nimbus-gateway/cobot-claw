@@ -97,6 +97,16 @@ POSES = {
     "look_back":     [2.8,    -1.5708, 0.0,    -1.5708, 0.0,    0.0],
 }
 
+# Optional override of the home pose: six comma-separated joint angles (rad).
+# The URSim demo uses this for a home above the table in front of the robot.
+# The real cell's home (base -181°, behind the robot) made every pick-and-place
+# swing the base around. Unset = the home above.
+if os.getenv("HOME_JOINTS"):
+    _home = [float(v) for v in os.environ["HOME_JOINTS"].split(",")]
+    if len(_home) != 6:
+        raise SystemExit("HOME_JOINTS needs exactly 6 comma-separated joint angles (rad)")
+    POSES["home"] = _home
+
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -134,6 +144,56 @@ def quat_to_rpy(x: float, y: float, z: float, w: float) -> dict[str, float]:
         "pitch_deg": rad_to_deg(pitch),
         "yaw_deg": rad_to_deg(yaw),
     }
+
+
+# UR joints turn about ±360°, so a named pose such as "home" (base -181°)
+# can be reached with joint angles that differ by 2π, and movej interpolates
+# the raw angles. With SHORTEST_JOINT_PATH on (default), move_named_pose
+# shifts each joint by ±2π to the equivalent nearest the arm's current angles
+# (inside JOINT_LIMITS), so going home from +75° turns 104° instead of 256°.
+# For the base, equivalents within ±(π + 0.5) are preferred: if the base has
+# been wound up, it unwinds on the way to the named pose, with the arm raised,
+# and not on the next IK move down near the table (IK returns base angles in
+# that range). Other joints just take the nearest equivalent.
+# Explicit joint targets (move_joints, move_path, unwind_joint) are sent
+# unchanged: the caller chose those angles and the direction of travel.
+SHORTEST_JOINT_PATH = os.getenv("SHORTEST_JOINT_PATH", "1").lower() not in {"0", "false", "no"}
+
+
+def shortest_equivalent(target: list[float], reference: list[float] | None) -> list[float]:
+    """Shift each target angle by multiples of 2π to the value nearest `reference`."""
+    if not SHORTEST_JOINT_PATH or reference is None or len(reference) != len(target):
+        return [float(x) for x in target]
+    out = []
+    for name, t, ref in zip(JOINTS, target, reference):
+        lo, hi = JOINT_LIMITS[name]
+        cands = [float(t) + 2 * math.pi * k for k in (0, -1, 1, -2, 2)]
+        cands = [c for c in cands if lo <= c <= hi] or [float(t)]
+        unwound = [c for c in cands if abs(c) <= math.pi + 0.5] if name == "shoulder_pan_joint" else []
+        out.append(min(unwound or cands, key=lambda c: abs(c - ref)))
+    return out
+
+
+def _wait_until_reached(target: list[float], timeout_sec: float, tolerance_rad: float) -> bool:
+    """Block until every joint is within tolerance of target. False on timeout."""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        time.sleep(0.1)
+        current = _current_joints()
+        if current is not None and max(abs(c - t) for c, t in zip(current, target)) <= tolerance_rad:
+            return True
+    return False
+
+
+def _current_joints() -> list[float] | None:
+    r = robot
+    if r is not None:
+        cur = r.get_current_joints()
+        if cur is not None:
+            return cur
+    if rtde is not None and rtde.connected:
+        return rtde.joints
+    return None
 
 
 def check_joint_vector_limits(joints: list[float]) -> dict[str, Any]:
@@ -878,16 +938,23 @@ def move_named_pose(
     speed: float = 1.05,
     accel: float = 1.4,
     via_home: bool = False,
+    wait_for_completion: bool = True,
+    completion_timeout_sec: float = 30.0,
+    completion_tolerance_rad: float = 0.03,
 ) -> dict[str, Any]:
     """
     Move to a named pose using URScript movej() via port 30002.
     Optionally go via home first.
+
+    By default, blocks until the pose is reached, like move_joints. Each
+    command sent to port 30002 replaces the running program, so returning
+    early let the next command (e.g. a gripper action) cancel this move.
     """
     if name not in POSES:
         return {"ok": False, "message": f"Unknown pose '{name}'", "available_poses": list(POSES.keys())}
 
     if via_home and name != "home":
-        _send_movej(POSES["home"], speed=speed, accel=accel)
+        _send_movej(shortest_equivalent(POSES["home"], _current_joints()), speed=speed, accel=accel)
         # Wait for home to complete before moving to target
         deadline = time.time() + 15.0
         r = require_robot()
@@ -896,14 +963,20 @@ def move_named_pose(
             if r.is_motion_complete().get("complete"):
                 break
 
-    script = _send_movej(POSES[name], speed=speed, accel=accel)
+    target = shortest_equivalent(POSES[name], _current_joints())
+    script = _send_movej(target, speed=speed, accel=accel)
+
+    if wait_for_completion and not _wait_until_reached(
+        target, completion_timeout_sec, completion_tolerance_rad
+    ):
+        return {"ok": False, "message": f"Motion to '{name}' did not complete within {completion_timeout_sec}s"}
 
     return {
         "ok": True,
-        "message": "movej command sent",
+        "message": "movej complete" if wait_for_completion else "movej command sent",
         "pose": name,
         "via_home": via_home,
-        "target_joints_rad": [round(x, 5) for x in POSES[name]],
+        "target_joints_rad": [round(x, 5) for x in target],
         "speed_rad_s": speed,
         "script": script.strip(),
     }

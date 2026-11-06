@@ -38,6 +38,16 @@ _DH = [
     (0.0921,   0.0,      0.0),
 ]
 
+# Joint limits (rad), matching the arm MCP server's software limits.
+_JOINT_LIMITS = [(-6.0, 6.0), (-6.0, 6.0), (-3.0, 3.0), (-6.0, 6.0), (-6.0, 6.0), (-6.0, 6.0)]
+
+# Weights for comparing IK candidates with the seed. Turning the base or
+# rolling the last wrist joint doesn't change the arm's shape, so differences
+# there count much less. Equal weights made the solver prefer contorted
+# configurations (shoulder below horizontal, wrist folded back) just to save
+# base rotation: 25% of reachable targets with the pick seeds, 4% after.
+_SEED_WEIGHTS = (0.05, 1.0, 1.0, 1.0, 1.0, 0.2)
+
 # Reference config used to prefer "natural" arm orientation when no seed given
 _PICK_SEED       = [ 1.151908, -1.467556, -1.403377, -1.746785,  1.567782, 3.172426]
 _PICK_SEED_LEFT  = [-1.151908, -1.467556, -1.403377, -1.746785,  1.567782, 3.172426]
@@ -189,8 +199,8 @@ def ur3e_ik(x: float, y: float, z: float,
             if p_err > 0.010:
                 continue
             seed_dist = sum(
-                (((a - b + _PI) % (2 * _PI) - _PI) ** 2)
-                for a, b in zip(sol, q_seed)
+                w * (((a - b + _PI) % (2 * _PI) - _PI) ** 2)
+                for w, a, b in zip(_SEED_WEIGHTS, sol, q_seed)
             )
             candidates.append((seed_dist, p_err, sol))
 
@@ -203,12 +213,15 @@ def ur3e_ik(x: float, y: float, z: float,
     best = candidates[0][2]
     wrapped = [((j + _PI) % (2 * _PI)) - _PI for j in best]
     # After normalising to [-π, π], nudge each joint ±2π toward the seed so
-    # the arm stays in the same wrist/elbow branch it was already in.
+    # the arm stays in the same wrist/elbow branch it was already in, but
+    # never outside the joint limits (a wound seed used to give e.g. -7.24).
     if q_seed:
         for i in range(len(wrapped)):
+            lo, hi = _JOINT_LIMITS[i]
             for offset in (2 * _PI, -2 * _PI):
-                if abs(wrapped[i] + offset - q_seed[i]) < abs(wrapped[i] - q_seed[i]):
-                    wrapped[i] += offset
+                cand = wrapped[i] + offset
+                if lo <= cand <= hi and abs(cand - q_seed[i]) < abs(wrapped[i] - q_seed[i]):
+                    wrapped[i] = cand
     return [round(j, 6) for j in wrapped]
 
 
