@@ -15,7 +15,8 @@ Run it *inside* the URSim container (scripts/start_ursim_demo.sh does this):
 Options (environment variables):
     EMU_PORT        port to listen on (default 63352)
     EMU_OBJECT_POS  if set (0-255), closing stops there and reports an object
-                    detected, as if a part were in the jaws
+                    detected, as if a part were in the jaws. The scene server
+                    (tools/sim_scene) overrides this at runtime with SET SOB.
     EMU_STATUS_FILE file the current state is written to as JSON after every
                     change (default /tmp/robotiq_emulator.json)
 
@@ -72,8 +73,10 @@ class Gripper:
         self.pos = 0          # current position
         self.sid = 9
         self.act_since: float | None = None
-        self.motion: tuple[float, int, int, float] | None = None  # t0, start, target, duration
+        # t0, start, target, duration, stopped_on_object
+        self.motion: tuple[float, int, int, float, bool] | None = None
         self.obj = 0
+        self.sim_obj_pos: int | None = None   # set at runtime with SET SOB (scene server)
         self._write_status()
 
     # ── state ────────────────────────────────────────────────────────────────
@@ -88,32 +91,30 @@ class Gripper:
         """Advance the simulated motion."""
         if not self.motion:
             return
-        t0, start, target, duration = self.motion
+        t0, start, target, duration, on_object = self.motion
         frac = 1.0 if duration <= 0 else min(1.0, (time.monotonic() - t0) / duration)
         self.pos = round(start + (target - start) * frac)
         if frac >= 1.0:
             self.pos = target
             self.motion = None
-            closing = target > start
-            hit_object = (
-                OBJECT_POS is not None and closing and target == OBJECT_POS and self.pre > OBJECT_POS
-            )
-            self.obj = 2 if hit_object else 3
+            self.obj = 2 if on_object else 3
             self._write_status()
 
     def _start_motion(self) -> None:
         if not self._activated():
             return
         target = self.pre
-        if OBJECT_POS is not None and target > OBJECT_POS >= self.pos:
-            target = OBJECT_POS            # jaws stop on the part
+        obj_pos = self.sim_obj_pos if self.sim_obj_pos is not None else OBJECT_POS
+        on_object = obj_pos is not None and target > obj_pos >= self.pos
+        if on_object:
+            target = obj_pos               # jaws stop on the part
         speed_frac = self.spe / 255
         full = FULL_STROKE_SEC_AT_MIN_SPEED - (
             FULL_STROKE_SEC_AT_MIN_SPEED - FULL_STROKE_SEC_AT_MAX_SPEED
         ) * speed_frac
         duration = full * abs(target - self.pos) / 255
         self.obj = 0
-        self.motion = (time.monotonic(), self.pos, target, duration)
+        self.motion = (time.monotonic(), self.pos, target, duration, on_object)
         log(f"moving {self.pos} -> {target} ({duration:.2f}s)")
         self._update()
 
@@ -166,6 +167,10 @@ class Gripper:
                     self.ard = value
                 elif name == "SID":
                     self.sid = value
+                elif name == "SOB":
+                    # Not a Robotiq register: the scene server sets where the
+                    # jaws would meet an object (-1 = nothing between them).
+                    self.sim_obj_pos = value if value >= 0 else None
             if any(n in ("GTO", "POS") for n, _ in pairs) and self.gto == 1:
                 self._start_motion()
             self._write_status()

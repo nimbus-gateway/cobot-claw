@@ -223,6 +223,33 @@ The pendant only draws the bare arm. To see the gripper as well, start with `--r
 - As on the real robot, a gripper command replaces the arm's control program. cobot-claw restores it with the arm's `recover_external_control` tool. Avoid the pendant's Installation tab while the stack runs, because it also stops the program.
 - Stop the simulator with `docker stop ursim`.
 
+#### Simulated objects: pick and place in the sim
+
+URSim has no camera, so the stack also runs a scene server, [scene_server.py](tools/sim_scene/scene_server.py). It loads the objects and containers in [scene.yaml](tools/sim_scene/scene.yaml), draws them in the RViz view, and tracks grasps. An object attaches when the gripper closes on it and drops onto the table or into a container when the gripper opens. To use it, set this in `cobot.yaml`:
+
+```yaml
+agents:
+  vision:
+    detector: sim        # objects come from tools/sim_scene instead of the camera + Gemini
+    ik_solver: local     # robot IK sends a script that stops arm control
+```
+
+Then ask, for example, "what objects are on the table?" or "pick up the blue cylinder and put it in the grey bin".
+
+- Only detection is simulated. Objects are found by name, colour or shape from the scene file, and the moves follow the camera-based pick and place tools ([sim.py](cobot/agents/vision_agent/sim.py)). Camera detection and hand-eye calibration aren't exercised.
+- There's no physics: objects don't tip, slide or collide, and the arm can pass through them.
+- Edit `scene.yaml` to change the layout. To reload it, restart the stack or call the scene server's `reset_scene` tool.
+- In the sim, the gripper server waits for each gripper script to finish and restores arm control through the arm MCP server (`ARM_MCP_URL`) before returning. Otherwise the next arm move races the gripper. Without `ARM_MCP_URL`, the server keeps its original behaviour.
+
+#### Arm motion notes (sim and real robot)
+
+These changes are in shared code, so they also affect the real robot:
+
+- **IK picks natural arm configurations.** The local IK solver ranks its candidates mostly by shoulder, elbow and wrist 1–2, and counts base rotation and wrist-3 roll much less. Before this, about a quarter of reachable targets got contorted solutions (shoulder at or below horizontal, wrist folded back), which made the gripper sweep into the arm. Its final ±360° adjustment also respects joint limits now.
+- **`move_named_pose` waits for the pose** (as `move_joints` does). Every arm or gripper command is a URScript program on port 30002 that replaces the running one. A "home" move that returned at once was cancelled by the next command, so picks started from wherever the arm happened to be.
+- **Named poses take the shortest way round.** "Home" is reached with the ±360° equivalent nearest the current joints. If the base has been wound past about ±210°, it unwinds on the way home, with the arm raised (`SHORTEST_JOINT_PATH=0` to disable). Explicit joint targets are sent unchanged.
+- **Sim home in front of the robot.** The real cell's home is behind the robot (base −181°), so every pick-and-place swung the base around. The launcher gives the arm server a sim home 0.35 m above the table at (0.25, 0, 0), facing the scene, through `HOME_JOINTS`. Set `SIM_HOME_JOINTS` to change it, or leave it empty to use the real home. In a recorded rotate-and-two-picks test, this cut joint travel by a third (2,120° to 1,430°) and time from 96 s to 64 s.
+
 ---
 
 ## CLI

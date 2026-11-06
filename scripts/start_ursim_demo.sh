@@ -7,8 +7,10 @@
 #   3. UR ROS 2 driver (ur_robot_driver) connected to the simulator
 #   4. Arm MCP server (tools/ure3/ur3e_arm_mcp.py) on :8765
 #   5. Gripper MCP server (tools/gripper/server.py) on :8001
-#   6. RViz with the arm and a Robotiq gripper model (only with --rviz)
-#   7. cobot-claw REPL (skip with --no-app)
+#   6. Simulated scene server (tools/sim_scene/scene_server.py) on :8010:
+#      objects to pick, used by cobot-claw when agents.vision.detector is "sim"
+#   7. RViz with the arm, a Robotiq gripper model and the scene (only with --rviz)
+#   8. cobot-claw REPL (skip with --no-app)
 #
 # View the simulated robot / teach pendant in a browser:
 #   http://192.168.56.101:6080/vnc.html?autoconnect=true&resize=scale
@@ -26,6 +28,7 @@
 #     socket protocol on port 63352, so Gripper.script runs unchanged.
 #     Set EMU_OBJECT_POS=0-255 to make closing stop on a simulated part.
 #     Gripper state: docker exec ursim cat /tmp/robotiq_emulator.json
+#   - Scene layout: tools/sim_scene/scene.yaml (override with SCENE_FILE=...).
 
 set -euo pipefail
 
@@ -39,7 +42,7 @@ while [[ $# -gt 0 ]]; do
     --no-app) RUN_APP=false ;;
     --rviz)   RVIZ=true ;;
     -c)       CONFIG="$2"; shift ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
   shift
@@ -49,6 +52,11 @@ ROS_DISTRO_DIR="${ROS_DISTRO_DIR:-/opt/ros/jazzy}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 URSIM_VERSION="${URSIM_VERSION:-5.22.2}"
 SIM_IP=192.168.56.101
+# Home for the sim: gripper pointing down 0.35 m above the table at (0.25, 0, 0)
+# in the base frame, facing the scene's objects and bin. The real cell's home is
+# behind the robot (base -181°), so every pick-and-place swung the base around.
+# Override with SIM_HOME_JOINTS=... or set it empty to use the real home.
+SIM_HOME_JOINTS="${SIM_HOME_JOINTS-0.552,-1.248,-1.612,-1.853,1.571,3.693}"
 PROGRAMS_DIR="$HOME/.ursim/e-series/ur3e-$URSIM_VERSION/programs"
 LOG_DIR="$ROOT/logs"
 mkdir -p "$LOG_DIR" "$PROGRAMS_DIR"
@@ -64,10 +72,18 @@ set +u; source "$ROS_DISTRO_DIR/setup.bash"; set -u
 export ROS_DOMAIN_ID
 
 PIDS=()
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  kill "$1" 2>/dev/null || true
+}
 cleanup() {
   [[ ${#PIDS[@]} -gt 0 ]] || return 0
   log "Stopping driver and MCP servers…"
-  kill "${PIDS[@]}" 2>/dev/null || true
+  # Stop whole process trees: ros2 launch / ros2 run leave their nodes
+  # running if only the parent is killed.
+  local pid
+  for pid in "${PIDS[@]}"; do kill_tree "$pid"; done
   wait "${PIDS[@]}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -130,7 +146,7 @@ if ss -ltn | grep -q ':8765 '; then
   log "Port 8765 already in use — is another arm MCP server running?"; exit 1
 fi
 log "Starting arm MCP server on :8765 (log: logs/ursim_arm_mcp.log)…"
-( cd "$ROOT/tools/ure3" && ROBOT_IP="$SIM_IP" exec python3 ur3e_arm_mcp.py ) \
+( cd "$ROOT/tools/ure3" && ROBOT_IP="$SIM_IP" HOME_JOINTS="$SIM_HOME_JOINTS" exec python3 ur3e_arm_mcp.py ) \
   > "$LOG_DIR/ursim_arm_mcp.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 30); do ss -ltn | grep -q ':8765 ' && break; sleep 1; done
@@ -140,12 +156,22 @@ if ss -ltn | grep -q ':8001 '; then
   log "Port 8001 already in use — is another gripper MCP server running?"; exit 1
 fi
 log "Starting gripper MCP server on :8001 (log: logs/ursim_gripper_mcp.log)…"
-( cd "$ROOT/tools/gripper" && ROBOT_IP="$SIM_IP" exec "$ROOT/.venv/bin/python" server.py ) \
+( cd "$ROOT/tools/gripper" && ROBOT_IP="$SIM_IP" ARM_MCP_URL=http://127.0.0.1:8765/mcp \
+    exec "$ROOT/.venv/bin/python" server.py ) \
   > "$LOG_DIR/ursim_gripper_mcp.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 30); do ss -ltn | grep -q ':8001 ' && break; sleep 1; done
 
-# ── 6. RViz (optional) ───────────────────────────────────────────────────────
+# ── 6. Simulated scene server ────────────────────────────────────────────────
+if ss -ltn | grep -q ':8010 '; then
+  log "Port 8010 already in use — is another scene server running?"; exit 1
+fi
+log "Starting simulated scene server on :8010 (log: logs/ursim_scene.log)…"
+python3 "$ROOT/tools/sim_scene/scene_server.py" > "$LOG_DIR/ursim_scene.log" 2>&1 &
+PIDS+=($!)
+for _ in $(seq 1 30); do ss -ltn | grep -q ':8010 ' && break; sleep 1; done
+
+# ── 7. RViz (optional) ───────────────────────────────────────────────────────
 if $RVIZ; then
   log "Starting RViz with the gripper model (log: logs/rviz.log)…"
   "$ROOT/tools/viz/start_rviz.sh" > "$LOG_DIR/rviz.log" 2>&1 &
@@ -154,7 +180,7 @@ fi
 
 log "Ready. Teach pendant: http://$SIM_IP:6080/vnc.html?autoconnect=true&resize=scale"
 
-# ── 7. cobot-claw ────────────────────────────────────────────────────────────
+# ── 8. cobot-claw ────────────────────────────────────────────────────────────
 if $RUN_APP; then
   cd "$ROOT"
   "$ROOT/.venv/bin/cobot-claw" -c "$CONFIG" -r ur3e

@@ -114,6 +114,18 @@ async def _connect_session(session: CobotSession) -> None:
     )
     session.mcp_status["vision"] = True
 
+    vcfg = session.cfg.agents.vision
+    if vcfg.detector == "sim":
+        _scene_client = MCPClient(vcfg.sim_scene_url)
+        try:
+            await _scene_client.connect()
+            vision_deps.sim_scene = _scene_client
+            session.mcp_status["scene"] = True
+        except Exception as e:
+            vision_deps.sim_scene = _OfflineMCP(vcfg.sim_scene_url)
+            session.mcp_status["scene"] = False
+            console.print(f"  [yellow]⚠[/yellow]  Simulated scene unavailable ({vcfg.sim_scene_url}): {e}")
+
     async def _vision_servo_fn(description: str) -> dict | None:
         import asyncio
         loop = asyncio.get_event_loop()

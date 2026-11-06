@@ -1,0 +1,48 @@
+# Simulated pick-and-place scene for URSim (tools/sim_scene/scene_server.py).
+#
+# Coordinates are metres in the UR controller's base frame ("base" in ROS,
+# the same frame cobot-claw's kinematics use). The table top is z = 0, where
+# the robot is mounted. Positions are object centres on the table.
+#
+# Reachable area for picks with the gripper pointing down is roughly
+# 0.20–0.40 m from the base.
+#
+# Edit this file and call the scene server's reset_scene tool (or restart
+# it) to load a new layout.
+
+gripper:
+  grasp_depth_m: 0.14       # tool0 flange -> centre of the finger pads
+  stroke_m: 0.085           # fully open jaw width (Robotiq 2F-85 / Hand-E 0.05)
+  capture_xy_m: 0.03        # how far off-centre a grasp may be and still hold
+
+table:
+  size_m: [1.0, 1.0]
+  center_m: [0.0, 0.0]
+
+objects:
+  - name: red block
+    shape: box              # box: size_m = [x, y, z]
+    size_m: [0.04, 0.04, 0.04]
+    color: red
+    position_m: [0.20, 0.25]
+
+  - name: blue cylinder
+    shape: cylinder         # cylinder: size_m = [diameter, height]
+    size_m: [0.04, 0.08]
+    color: blue
+    position_m: [0.05, 0.32]
+    aliases: [can, bottle]
+
+  - name: green block
+    shape: box
+    size_m: [0.035, 0.035, 0.035]
+    color: green
+    position_m: [-0.10, 0.30]
+
+containers:
+  - name: grey bin
+    size_m: [0.16, 0.16, 0.06]   # outer [x, y, height]
+    wall_m: 0.006
+    color: grey
+    position_m: [0.05, -0.30]
+    aliases: [bin, box, container, tray, basket]

@@ -165,4 +165,7 @@ def make_detector(cfg) -> VisionDetector | None:
             model=vcfg.model,
         )
 
-    raise ValueError(f"Unknown vision detector backend: {backend!r}. Use 'gemini' or 'openai_vision'.")
+    if backend == "sim":
+        return None   # objects come from the simulated scene server (vision_agent/sim.py)
+
+    raise ValueError(f"Unknown vision detector backend: {backend!r}. Use 'gemini', 'openai_vision' or 'sim'.")

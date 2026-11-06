@@ -38,7 +38,8 @@ class SafetyAgentConfig(AgentModelConfig):
 
 
 class VisionAgentConfig(AgentModelConfig):
-    detector: str = "gemini"       # "gemini" | "openai_vision" (Ollama / any OpenAI-compatible endpoint)
+    detector: str = "gemini"       # "gemini" | "openai_vision" (Ollama / any OpenAI-compatible endpoint) | "sim" (URSim scene)
+    sim_scene_url: str = "http://localhost:8010/mcp"  # scene server used when detector == "sim" (tools/sim_scene)
     google_api_key: str = ""       # required when detector=gemini; leave blank to use GOOGLE_API_KEY env var
     ik_solver: str = "robot"       # "robot" = robot MCP get_inverse_kin, "local" = analytical solver
     pick_x_offset_m: float = 0.0   # correction offset applied to detected X position (tune to fix systematic grasp error)

@@ -24,6 +24,7 @@ from cobot.agents.vision_agent.camera import (
 )
 from cobot.agents.vision_agent.detector import VisionDetector, make_detector
 from cobot.agents.vision_agent.kinematics import APPROACH_Z_OFFSET
+from cobot.agents.vision_agent import sim as _sim
 
 
 @dataclass
@@ -34,6 +35,7 @@ class VisionAgentDeps:
     arm_mcp: object | None = None       # MCPClient — injected at session startup
     gripper_mcp: object | None = None   # MCPClient — injected at session startup
     camera_stream: object | None = None  # CameraStream — set when /vision-debug is active
+    sim_scene: object | None = None     # MCPClient for tools/sim_scene — set when detector == "sim"
     _T_base_cam: np.ndarray | None = field(default=None, repr=False)
     # Cached frame from the last capture_scene call — reused by locate_object
     _frame: tuple | None = field(default=None, repr=False)   # (color, depth, ci, ds)
@@ -87,7 +89,7 @@ class VisionAgentDeps:
 
     def locate_sync(self, description: str) -> dict | None:
         """Capture a fresh frame, locate object, return base-frame {x,y,z} or None."""
-        if self.detector is None:
+        if self.detector is None or self.sim_scene is not None:
             return None
         from cobot.agents.vision_agent.camera import (
             encode_jpeg, depth_at_pixel, depth_at_box,
@@ -153,7 +155,10 @@ _DEFAULT_VISION_PROMPT = (
     "- User says 'where is X', 'find X' → call locate_object() once.\n"
     "- User says 'what do you see', 'what is on the table', 'workspace check' → call check_workspace_clear() once.\n"
     "- Do NOT call capture_scene() — it is called automatically by locate_object().\n"
-    "Never generate YAML scenario files — that is the Config Agent's responsibility.\n\n"
+    "Never generate YAML scenario files — that is the Config Agent's responsibility.\n"
+    "If tool results say simulated=True you are driving a simulated cell (URSim): objects come\n"
+    "from a scene file, not the camera. Use the same tools; the object names from the scene\n"
+    "(e.g. 'red block', 'grey bin') work best as descriptions.\n\n"
     "Return a VisionAgentResult with all relevant fields populated."
 )
 
@@ -173,6 +178,8 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         Saves the raw image to vision_scene.jpg for inspection.
         Call this once — subsequent locate_object calls reuse this frame.
         """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_capture_scene(ctx.deps)
         color, depth, ci, ds = ctx.deps._capture()
         ctx.deps.set_frame(color, depth, ci, ds)
         valid = (depth * ds)[depth > 0]
@@ -198,6 +205,8 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         Args:
             description: e.g. "water bottle", "red block", "right side of table"
         """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_locate_object(ctx.deps, description)
         if ctx.deps.detector is None:
             return {"success": False, "error": "GOOGLE_API_KEY not set"}
 
@@ -262,6 +271,8 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         Args:
             description: What to pick, e.g. "bottle on the table".
         """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_pick_object(ctx.deps, description)
         from cobot.agents.vision_agent.camera import (
             encode_jpeg, depth_at_pixel, depth_at_box,
             pixel_to_camera_xyz, camera_to_base,
@@ -413,6 +424,8 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         Args:
             place_description: Target location, e.g. "cardboard box", "left side of table".
         """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_place_object(ctx.deps, ctx.deps.cfg, place_description)
         from cobot.agents.vision_agent.camera import (
             encode_jpeg, depth_at_pixel, depth_at_box_top,
             pixel_to_camera_xyz, camera_to_base,
@@ -526,6 +539,8 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
             description:    What to point at, e.g. "bottle", "red cup".
             hover_height_m: Height above the detected object surface to hover (default 0.12 m).
         """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_point_to_object(ctx.deps, description, hover_height_m)
         from cobot.agents.vision_agent.camera import (
             encode_jpeg, depth_at_pixel, depth_at_box,
             pixel_to_camera_xyz, camera_to_base,
@@ -588,6 +603,8 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
         Ask Gemini ER whether the robot workspace is clear of unexpected obstacles.
         Returns a safety assessment before large arm movements.
         """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_check_workspace(ctx.deps)
         if ctx.deps.detector is None:
             return {"success": False, "error": "GOOGLE_API_KEY not set"}
 

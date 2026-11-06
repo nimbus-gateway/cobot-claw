@@ -23,7 +23,12 @@ source "$ROS_DISTRO_DIR/setup.bash"
 source "$ROBOTIQ_WS/setup.bash"
 
 PIDS=()
-cleanup() { kill "${PIDS[@]}" 2>/dev/null || true; wait "${PIDS[@]}" 2>/dev/null || true; }
+kill_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$child"; done
+  kill "$1" 2>/dev/null || true
+}
+cleanup() { local p; for p in "${PIDS[@]}"; do kill_tree "$p"; done; wait "${PIDS[@]}" 2>/dev/null || true; }
 trap cleanup EXIT
 
 URDF="$(xacro "$HERE/gripper_on_ur.urdf.xacro")"
