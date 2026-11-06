@@ -1,5 +1,5 @@
 # Known-good dependency versions (Python 3.11/3.12). Install with:
-#   pip install -c requirements.lock.txt -e ".[obs,dev]"
+#   pip install -c requirements.lock.txt -e ".[obs,dev,voice]"
 aiofile==3.11.1
 annotated-doc==0.0.4
 annotated-types==0.7.0
@@ -111,3 +111,14 @@ uvicorn==0.49.0
 wcwidth==0.8.2
 websockets==16.0
 wrapt==2.2.2
+# voice extra (faster-whisper)
+av==19.0.2
+ctranslate2==4.8.5
+faster-whisper==1.2.1
+filelock==4.2.9
+flatbuffers==25.12.19
+fsspec==2026.9.0
+hf-xet==1.8.0
+huggingface_hub==2.4.0
+onnxruntime==1.31.1
+tokenizers==0.23.3

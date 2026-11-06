@@ -35,6 +35,9 @@ rag = [
 obs = [
     "logfire[pydantic-ai]>=3.0",
 ]
+voice = [
+    "faster-whisper>=1.1",   # local speech-to-text for push-to-talk (cobot/cli/voice.py)
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

@@ -241,6 +241,25 @@ Then ask, for example, "what objects are on the table?" or "pick up the blue cyl
 - Edit `scene.yaml` to change the layout. To reload it, restart the stack or call the scene server's `reset_scene` tool.
 - In the sim, the gripper server waits for each gripper script to finish and restores arm control through the arm MCP server (`ARM_MCP_URL`) before returning. Otherwise the next arm move races the gripper. Without `ARM_MCP_URL`, the server keeps its original behaviour.
 
+#### Voice commands
+
+cobot-claw can take spoken commands. Speech-to-text runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on the CPU, and the audio never leaves the machine. Install and enable it:
+
+```bash
+.venv/bin/pip install -c requirements.lock.txt -e ".[voice]"
+```
+
+```yaml
+voice:
+  enabled: true
+```
+
+- **At the prompt, press F9 or Ctrl+Space and speak.** A red **● listening** label appears at the right end of the prompt line. Recording ends when you pause, or when you press the key again. On laptops whose top row sends media keys (e.g. Dell with Fn Lock off), F9 never reaches the terminal: use Ctrl+Space, or toggle Fn Lock (Fn+Esc on Dells). The text appears in the prompt for you to check: press Enter to send it, or edit it first. Misheard words become arm motion, so `auto_send: true` (send at once) is best kept for rehearsed demos. The status line at the bottom shows what's happening.
+- **While a task runs, say "stop"** (or "halt", "freeze"). The task is cancelled and the arm brakes with the arm server's `stop_motion` tool (URScript `stopj`), without going through the agents. It takes about 1.5–3 s from the start of the word. This is a convenience, not a safety function: use the E-stop.
+- **Models:** `small.en` for commands (about 2.5 s per command on a 12-core laptop CPU) and `base.en` for listening for "stop". `base.en` was too error-prone for commands: in tests it turned "Close the gripper" into "Place the gripper". Both download once (~0.6 GB) to the Hugging Face cache.
+- **Microphone:** audio comes from `arecord` (ALSA/PipeWire), so no PortAudio is needed. The mic stays open while cobot-claw runs with voice enabled: from cold, this laptop's mic gives about 0.5 s of full-scale noise before it settles. Audio is only kept and transcribed after F9, or during a task for the stop listener. Set `voice.device` to choose a microphone (`arecord -L`), and `voice.min_level` for noisy rooms.
+- **Vocabulary:** `voice.vocabulary` biases recognition toward the cell's words. Add your object names there.
+
 #### Arm motion notes (sim and real robot)
 
 These changes are in shared code, so they also affect the real robot:
@@ -248,6 +267,7 @@ These changes are in shared code, so they also affect the real robot:
 - **IK picks natural arm configurations.** The local IK solver ranks its candidates mostly by shoulder, elbow and wrist 1–2, and counts base rotation and wrist-3 roll much less. Before this, about a quarter of reachable targets got contorted solutions (shoulder at or below horizontal, wrist folded back), which made the gripper sweep into the arm. Its final ±360° adjustment also respects joint limits now.
 - **`move_named_pose` waits for the pose** (as `move_joints` does). Every arm or gripper command is a URScript program on port 30002 that replaces the running one. A "home" move that returned at once was cancelled by the next command, so picks started from wherever the arm happened to be.
 - **Named poses take the shortest way round.** "Home" is reached with the ±360° equivalent nearest the current joints. If the base has been wound past about ±210°, it unwinds on the way home, with the arm raised (`SHORTEST_JOINT_PATH=0` to disable). Explicit joint targets are sent unchanged.
+- **New `stop_motion` tool** on the arm server brakes the arm with URScript `stopj`. `hold_position` moves back to the joint angles it read while the arm was still moving: in a test it crept 26° back over 5 s after "stopping".
 - **Sim home in front of the robot.** The real cell's home is behind the robot (base −181°), so every pick-and-place swung the base around. The launcher gives the arm server a sim home 0.35 m above the table at (0.25, 0, 0), facing the scene, through `HOME_JOINTS`. Set `SIM_HOME_JOINTS` to change it, or leave it empty to use the real home. In a recorded rotate-and-two-picks test, this cut joint travel by a third (2,120° to 1,430°) and time from 96 s to 64 s.
 
 ---

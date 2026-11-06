@@ -78,6 +78,27 @@ class ObservabilityConfig(BaseModel):
     token: str = ""   # Logfire project token — or set LOGFIRE_TOKEN env var
 
 
+class VoiceConfig(BaseModel):
+    """Local speech input for the REPL (cobot/cli/voice.py). Needs: pip install -e ".[voice]"."""
+    enabled: bool = False
+    key: str = "f9"                    # push-to-talk key at the prompt (prompt_toolkit key name)
+    alt_key: str = "c-space"           # second key: works when F-keys are media keys (laptop Fn Lock off); "" = none
+    model: str = "small.en"            # faster-whisper model for commands (tiny.en/base.en/small.en/distil-small.en/medium.en)
+    stop_model: str = "base.en"        # smaller, faster model for the spoken "stop" listener
+    cpu_threads: int = 8
+    auto_send: bool = False            # False: put the transcript in the prompt to check, Enter sends
+    stop_while_running: bool = True    # listen for "stop" while a task runs (cancels it + stops the arm)
+    device: str = ""                   # ALSA capture device for arecord ("" = default microphone)
+    silence_sec: float = 0.9           # pause that ends a command
+    wait_for_speech_sec: float = 6.0   # give up if nothing is said
+    max_record_sec: float = 15.0
+    min_level: float = 0.01            # minimum RMS counted as speech (raise in noisy rooms)
+    vocabulary: str = (                # biases recognition toward these words
+        "UR3e robot arm. Gripper, cylinder, block, bin, base joint, wrist, "
+        "home position. Pick, place, open, close, rotate, stop."
+    )
+
+
 class CobotConfig(BaseModel):
     llm: LLMConfig
     fleet: list[RobotConfig]
@@ -85,6 +106,7 @@ class CobotConfig(BaseModel):
     scenarios: ScenariosConfig
     rag: RAGConfig
     observability: ObservabilityConfig = ObservabilityConfig()
+    voice: VoiceConfig = VoiceConfig()
 
     def robot(self, name: str) -> RobotConfig:
         """Look up a robot by name. Raises KeyError if not found."""

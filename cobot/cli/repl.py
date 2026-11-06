@@ -81,14 +81,95 @@ def _prompt_text() -> HTML:
     return HTML("<ansiwhite><b>&gt;</b></ansiwhite> ")
 
 
-def _build_bindings() -> KeyBindings:
+def _build_bindings(session: CobotSession | None = None) -> KeyBindings:
     kb = KeyBindings()
 
     @kb.add("c-c")
     def _(event):
         event.current_buffer.reset()
 
+    voice = getattr(session, "voice", None)
+    if voice is not None:
+        keys = [k for k in (voice.cfg.key, voice.cfg.alt_key) if k]
+
+        def _voice_key(event):
+            if voice.state == "listening":
+                voice.cancel.set()          # second press: finish now
+                return
+            if voice.state == "transcribing":
+                return
+            event.app.create_background_task(_voice_to_prompt(event.app, voice, session))
+
+        for k in keys:
+            kb.add(k)(_voice_key)
+
     return kb
+
+
+# ---------------------------------------------------------------------------
+# Voice input (cobot/cli/voice.py)
+# ---------------------------------------------------------------------------
+
+async def _voice_stop_arm(session: CobotSession) -> str:
+    """Brake the arm directly, bypassing the agents: stop_motion (stopj), or
+    hold_position on arm servers without it."""
+    arm = session.deps.robotic_deps.arm_mcp if session.deps else None
+    if arm is None:
+        return "no arm connection"
+    last = ""
+    for tool in ("stop_motion", "hold_position"):
+        try:
+            res = await arm.call_tool(tool, {})
+        except Exception as e:  # noqa: BLE001 — e.g. tool not found on older servers
+            last = f"{tool} failed: {e}"
+            continue
+        if res.get("ok"):
+            return "arm stopped"
+        last = f"{tool} failed: {res.get('message')}"
+    return last
+
+
+async def _voice_to_prompt(app, voice, session: CobotSession) -> None:
+    """Record one spoken command and put the transcript in the prompt."""
+    from cobot.cli.voice import is_stop_command
+
+    if not voice.ready:
+        voice.message = "speech model still loading…" if voice.state == "loading" else voice.message
+        app.invalidate()
+        return
+    loop = asyncio.get_running_loop()
+    voice.message = ""
+    text = ""
+    try:
+        voice.state = "listening"
+        app.invalidate()
+        audio = await loop.run_in_executor(None, voice.record_utterance)
+        if audio is None:
+            voice.message = "didn't hear anything"
+            return
+        voice.state = "transcribing"
+        app.invalidate()
+        text = await loop.run_in_executor(None, voice.transcribe, audio)
+    except Exception as e:  # noqa: BLE001
+        voice.message = f"voice error: {e}"
+        return
+    finally:
+        voice.state = "ready"
+        app.invalidate()
+
+    if not text:
+        voice.message = "couldn't make out any words"
+    elif is_stop_command(text):
+        voice.message = f"heard “{text}”: {await _voice_stop_arm(session)}"
+    else:
+        buf = app.current_buffer
+        buf.text = text
+        buf.cursor_position = len(text)
+        if voice.cfg.auto_send:
+            buf.validate_and_handle()
+        else:
+            voice.message = "check it, then Enter to send"
+    app.invalidate()
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +517,24 @@ async def _run_cancellable(text: str, session: CobotSession) -> None:
 
     console.print("  [dim]Press ESC to stop[/dim]")
 
+    # Spoken "stop": cancel the task and hold the arm, without the agents.
+    voice = getattr(session, "voice", None)
+    stop_listener_done = threading.Event()
+    hold_tasks: list[asyncio.Task] = []
+    if voice is not None and voice.ready and voice.cfg.stop_while_running:
+        def _spoken_stop(heard: str) -> None:
+            console.print(f"\n  [red]Heard “{heard}”: stopping the arm[/red]")
+            hold_tasks.append(asyncio.create_task(_voice_stop_arm(session)))
+            cancel_event.set()
+
+        threading.Thread(
+            target=voice.listen_for_stop,
+            args=(stop_listener_done, lambda heard: loop.call_soon_threadsafe(_spoken_stop, heard)),
+            daemon=True,
+            name="voice-stop",
+        ).start()
+        console.print("  [dim]…or say “stop”[/dim]")
+
     watcher = threading.Thread(
         target=_watch_for_escape,
         args=(cancel_event, loop),
@@ -456,6 +555,9 @@ async def _run_cancellable(text: str, session: CobotSession) -> None:
     except asyncio.CancelledError:
         console.print("\n  [yellow]Stopped.[/yellow]\n")
     finally:
+        stop_listener_done.set()
+        for t in hold_tasks:
+            console.print(f"  [dim]{await t}[/dim]")
         cancel_event.set()   # stop watcher thread
         cancel_task.cancel()
         try:
@@ -480,11 +582,28 @@ async def run_repl(session: CobotSession) -> None:
         mcp_status=session.mcp_status,
     )
 
+    if session.cfg.voice.enabled and session.voice is None:
+        try:
+            from cobot.cli.voice import VoiceInput
+            session.voice = VoiceInput(session.cfg.voice)
+            session.voice.preload()
+        except ImportError:
+            console.print(' [yellow]⚠[/yellow]  voice.enabled is set but faster-whisper isn\'t installed: '
+                          'pip install -e ".[voice]"')
+
     history_path = Path.home() / ".cobot_history"
+    voice_toolbar = {}
+    if session.voice is not None:
+        voice_toolbar = {
+            "bottom_toolbar": lambda: session.voice.toolbar(),
+            "rprompt": lambda: HTML(session.voice.rprompt()),   # on the prompt line itself
+            "refresh_interval": 0.5,
+        }
     prompt_session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=CobotCompleter(session),
-        key_bindings=_build_bindings(),
+        key_bindings=_build_bindings(session),
+        **voice_toolbar,
         multiline=False,
     )
 

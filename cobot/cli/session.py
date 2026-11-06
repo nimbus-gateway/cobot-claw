@@ -32,6 +32,7 @@ class CobotSession:
     history: list[dict] = field(default_factory=list)
     message_history: list[ModelMessage] = field(default_factory=list)
     mcp_status: dict[str, bool] = field(default_factory=dict)  # {"arm": True, "gripper": False, ...}
+    voice: object | None = None  # cobot.cli.voice.VoiceInput when voice.enabled
 
     @property
     def robot_connected(self) -> bool:
