@@ -7,7 +7,8 @@
 #   3. UR ROS 2 driver (ur_robot_driver) connected to the simulator
 #   4. Arm MCP server (tools/ure3/ur3e_arm_mcp.py) on :8765
 #   5. Gripper MCP server (tools/gripper/server.py) on :8001
-#   6. cobot-claw REPL (skip with --no-app)
+#   6. RViz with the arm and a Robotiq gripper model (only with --rviz)
+#   7. cobot-claw REPL (skip with --no-app)
 #
 # View the simulated robot / teach pendant in a browser:
 #   http://192.168.56.101:6080/vnc.html?autoconnect=true&resize=scale
@@ -38,7 +39,7 @@ while [[ $# -gt 0 ]]; do
     --no-app) RUN_APP=false ;;
     --rviz)   RVIZ=true ;;
     -c)       CONFIG="$2"; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
   shift
@@ -111,7 +112,7 @@ fi
 # ── 3. UR ROS 2 driver ───────────────────────────────────────────────────────
 log "Starting UR ROS 2 driver (log: logs/ursim_driver.log)…"
 ros2 launch ur_robot_driver ur_control.launch.py \
-  ur_type:=ur3e robot_ip:="$SIM_IP" headless_mode:=true launch_rviz:="$RVIZ" \
+  ur_type:=ur3e robot_ip:="$SIM_IP" headless_mode:=true launch_rviz:=false \
   > "$LOG_DIR/ursim_driver.log" 2>&1 &
 PIDS+=($!)
 
@@ -144,9 +145,16 @@ log "Starting gripper MCP server on :8001 (log: logs/ursim_gripper_mcp.log)…"
 PIDS+=($!)
 for _ in $(seq 1 30); do ss -ltn | grep -q ':8001 ' && break; sleep 1; done
 
+# ── 6. RViz (optional) ───────────────────────────────────────────────────────
+if $RVIZ; then
+  log "Starting RViz with the gripper model (log: logs/rviz.log)…"
+  "$ROOT/tools/viz/start_rviz.sh" > "$LOG_DIR/rviz.log" 2>&1 &
+  PIDS+=($!)
+fi
+
 log "Ready. Teach pendant: http://$SIM_IP:6080/vnc.html?autoconnect=true&resize=scale"
 
-# ── 6. cobot-claw ────────────────────────────────────────────────────────────
+# ── 7. cobot-claw ────────────────────────────────────────────────────────────
 if $RUN_APP; then
   cd "$ROOT"
   "$ROOT/.venv/bin/cobot-claw" -c "$CONFIG" -r ur3e

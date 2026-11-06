@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!--
+  Robotiq 2F-85 on the UR adapter plate, rooted at the arm's tool0 frame.
+
+  This model holds only the gripper. The UR driver's robot_state_publisher
+  already publishes base_link ... tool0, so a second publisher for this model
+  (in the /gripper namespace) hangs the gripper off tool0 without
+  duplicating any arm frames.
+
+  The real cell uses a Hand-E; the 2F-85 is the closest model installed
+  (~/robotiq-gripper). Fully open/closed match Robotiq POS 0/255.
+-->
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="robotiq_2f_85_on_ur">
+  <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro" />
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro" />
+
+  <link name="tool0" />
+
+  <xacro:ur_to_robotiq prefix="" parent="tool0" child="gripper_mount" />
+
+  <xacro:robotiq_gripper name="RobotiqGripperViz" prefix="" parent="gripper_mount"
+                         include_ros2_control="false">
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </xacro:robotiq_gripper>
+</robot>

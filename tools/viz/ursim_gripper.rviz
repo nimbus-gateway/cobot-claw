@@ -1,0 +1,61 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.1
+      Plane Cell Count: 20
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/RobotModel
+      Name: UR3e (from URSim)
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+        Depth: 5
+      Visual Enabled: true
+      Collision Enabled: false
+    - Class: rviz_default_plugins/RobotModel
+      Name: Robotiq gripper (emulator)
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /gripper/robot_description
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+        Depth: 5
+      Visual Enabled: true
+      Collision Enabled: false
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: base_link
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.1
+      Focal Point:
+        X: 0.0
+        Y: -0.15
+        Z: 0.2
+      Pitch: 0.45
+      Yaw: 2.3
+      Name: Current View
+      Target Frame: <Fixed Frame>
+Window Geometry:
+  Width: 1200
+  Height: 800

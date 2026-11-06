@@ -215,6 +215,7 @@ The script starts URSim and powers on the arm. It then starts a Robotiq gripper 
 
 To watch the simulated robot, open the teach pendant at
 <http://192.168.56.101:6080/vnc.html?autoconnect=true&resize=scale> and choose the **Move** tab.
+The pendant only draws the bare arm. To see the gripper as well, start with `--rviz`, or run `tools/viz/start_rviz.sh` while the stack is up. This opens RViz with the arm following URSim and a Robotiq 2F-85 model whose fingers follow the gripper emulator. It needs the `robotiq_description` package, which it looks for in `~/robotiq-gripper/install` (override with `ROBOTIQ_WS`). The cell's real gripper is a Hand-E, but the 2F-85 is the closest model available.
 
 - URSim is pinned to 5.22.2. Newer images (5.26+) crash `ur_client_library` 2.6.
 - URSim has no gripper hardware, and the Robotiq URCap can't detect one there. Instead, [robotiq_emulator.py](tools/gripper/robotiq_emulator.py) runs inside the container on the URCap's port (63352). `Gripper.script` and the gripper MCP server work unchanged against it. Don't also install the Robotiq URCap in the sim: it takes the same port.
