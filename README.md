@@ -200,6 +200,28 @@ cobot-claw run pick_place             # execute a scenario directly
 cobot-claw run pick_place --dry-run   # preview steps without moving
 ```
 
+### Running against URSim (no real robot)
+
+You can run the whole stack against a simulated UR3e in Docker. You need Docker, ROS 2 Jazzy with `ur_robot_driver`, and a `cobot.yaml` whose robot `ip` is `192.168.56.101`.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -c requirements.lock.txt -e ".[obs,dev]"   # pinned: newer anthropic/mcp/openai majors break it
+cp cobot.example.yaml cobot.yaml   # set ip: 192.168.56.101 and your API key
+scripts/start_ursim_demo.sh        # add --no-app to start only the sim stack, --rviz for RViz
+```
+
+The script starts URSim and powers on the arm. It then starts a Robotiq gripper emulator, the ROS 2 driver, the arm and gripper MCP servers, and cobot-claw.
+
+To watch the simulated robot, open the teach pendant at
+<http://192.168.56.101:6080/vnc.html?autoconnect=true&resize=scale> and choose the **Move** tab.
+
+- URSim is pinned to 5.22.2. Newer images (5.26+) crash `ur_client_library` 2.6.
+- URSim has no gripper hardware, and the Robotiq URCap can't detect one there. Instead, [robotiq_emulator.py](tools/gripper/robotiq_emulator.py) runs inside the container on the URCap's port (63352). `Gripper.script` and the gripper MCP server work unchanged against it. Don't also install the Robotiq URCap in the sim: it takes the same port.
+- Watch the gripper with `docker exec ursim cat /tmp/robotiq_emulator.json`. To simulate grasping a part, start with `EMU_OBJECT_POS=200`: closing then stops at 200 and reports an object detected.
+- As on the real robot, a gripper command replaces the arm's control program. cobot-claw restores it with the arm's `recover_external_control` tool. Avoid the pendant's Installation tab while the stack runs, because it also stops the program.
+- Stop the simulator with `docker stop ursim`.
+
 ---
 
 ## CLI

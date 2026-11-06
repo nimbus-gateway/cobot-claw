@@ -53,10 +53,14 @@ pyrightconfig.json
 Thumbs.db
 
 # cobot-claw — secrets and local state
-cobot.yaml          # contains API keys — use cobot.yaml.example as template
-.cobot_history      # CLI input history
-chroma_db/          # RAG vector store (Phase 6)
-manuals/            # robot manual PDFs (Phase 6)
+# contains API keys — copy cobot.example.yaml as a template
+cobot.yaml
+# CLI input history
+.cobot_history
+# RAG vector store (Phase 6)
+chroma_db/
+# robot manual PDFs (Phase 6)
+manuals/
 logs/
 
 # ROS / build artifacts
