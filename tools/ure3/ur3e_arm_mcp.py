@@ -1055,6 +1055,24 @@ def hold_position() -> dict[str, Any]:
 
 @mcp.tool()
 @safe_tool
+def stop_motion(decel_rad_s2: float = 3.0) -> dict[str, Any]:
+    """
+    Stop the arm where it is: send URScript stopj() to brake all joints.
+    Unlike hold_position, which moves back to the joint angles read while the
+    arm was still moving, this doesn't move the arm again. Not an emergency stop.
+    """
+    import socket
+    script = f"stopj({float(decel_rad_s2):.3f})\n"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(5.0)
+    sock.connect((ROBOT_IP, 30002))
+    sock.sendall(script.encode("utf-8"))
+    sock.close()
+    return {"ok": True, "message": "stopj sent", "decel_rad_s2": float(decel_rad_s2)}
+
+
+@mcp.tool()
+@safe_tool
 def recover_external_control() -> dict[str, Any]:
     """
     Recover arm control after External Control was interrupted.
