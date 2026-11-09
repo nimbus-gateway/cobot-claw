@@ -211,7 +211,7 @@ cp cobot.example.yaml cobot.yaml   # set ip: 192.168.56.101 and your API key
 scripts/start_ursim_demo.sh        # add --no-app to start only the sim stack, --rviz for RViz
 ```
 
-The script starts URSim and powers on the arm. It then starts a Robotiq gripper emulator, the ROS 2 driver, the arm and gripper MCP servers, and cobot-claw.
+The script starts URSim and powers on the arm. It then starts a Robotiq gripper emulator, the ROS 2 driver, the arm and gripper MCP servers, the simulated scene server, RViz (with `--rviz`) and cobot-claw. Exiting cobot-claw or pressing Ctrl+C stops everything except the URSim container. To start the parts one by one instead, see [Starting each part manually](#starting-each-part-manually).
 
 To watch the simulated robot, open the teach pendant at
 <http://192.168.56.101:6080/vnc.html?autoconnect=true&resize=scale> and choose the **Move** tab.
@@ -220,8 +220,86 @@ The pendant only draws the bare arm. To see the gripper as well, start with `--r
 - URSim is pinned to 5.22.2. Newer images (5.26+) crash `ur_client_library` 2.6.
 - URSim has no gripper hardware, and the Robotiq URCap can't detect one there. Instead, [robotiq_emulator.py](tools/gripper/robotiq_emulator.py) runs inside the container on the URCap's port (63352). `Gripper.script` and the gripper MCP server work unchanged against it. Don't also install the Robotiq URCap in the sim: it takes the same port.
 - Watch the gripper with `docker exec ursim cat /tmp/robotiq_emulator.json`. To simulate grasping a part, start with `EMU_OBJECT_POS=200`: closing then stops at 200 and reports an object detected.
-- As on the real robot, a gripper command replaces the arm's control program. cobot-claw restores it with the arm's `recover_external_control` tool. Avoid the pendant's Installation tab while the stack runs, because it also stops the program.
+- As on the real robot, a gripper command replaces the arm's control program. In the sim, the gripper server restores it through the arm MCP server's `recover_external_control` before replying (`ARM_MCP_URL`). Avoid the pendant's Installation tab while the stack runs, because it also stops the program.
 - Stop the simulator with `docker stop ursim`.
+
+#### Starting each part manually
+
+This is what `scripts/start_ursim_demo.sh` does, one terminal per part. It's useful for watching each part's output or restarting just one. If the script is already running, stop it first (`pkill -f start_ursim_demo.sh`), or the servers below fail with "address already in use".
+
+Run this at the start of every new terminal (all but cobot-claw need ROS):
+
+```bash
+source /opt/ros/jazzy/setup.bash && export ROS_DOMAIN_ID=42 && cd /path/to/cobot-claw
+```
+
+1. **Simulator (URSim).** Start the container. Skip this if `docker ps` already lists `ursim`.
+
+   ```bash
+   ros2 run ur_client_library start_ursim.sh -m ur3e -v 5.22.2 -p ~/.ursim/e-series/ur3e-5.22/programs -d
+   ```
+
+   After about 30 s, power on the arm and release the brakes through the dashboard server. You can also use the button at the bottom left of the pendant at <http://192.168.56.101:6080/vnc.html>.
+
+   ```bash
+   for c in "close popup" "power on"; do (echo "$c"; sleep 1) | nc -w 3 192.168.56.101 29999 | tail -1; done; sleep 5; (echo "brake release"; sleep 1) | nc -w 3 192.168.56.101 29999 | tail -1
+   ```
+
+   It's ready when this prints `Robotmode: RUNNING`:
+
+   ```bash
+   (echo robotmode; sleep 1) | nc -w 3 192.168.56.101 29999 | tail -1
+   ```
+
+2. **Gripper emulator.** It runs inside the container, so repeat this after every simulator restart.
+
+   ```bash
+   docker cp tools/gripper/robotiq_emulator.py ursim:/tmp/robotiq_emulator.py && docker exec -d ursim sh -c 'python3 /tmp/robotiq_emulator.py > /tmp/robotiq_emulator.log 2>&1'
+   ```
+
+3. **ROS 2 driver** (terminal A, leave running). Wait for `Robot connected to reverse interface. Ready to receive control commands.`
+
+   ```bash
+   ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 headless_mode:=true launch_rviz:=false
+   ```
+
+4. **Arm MCP server** (terminal B). `HOME_JOINTS` is the sim's home in front of the robot. Leave it out to use the real cell's home, which is behind the robot.
+
+   ```bash
+   cd tools/ure3 && ROBOT_IP=192.168.56.101 HOME_JOINTS=0.552,-1.248,-1.612,-1.853,1.571,3.693 python3 ur3e_arm_mcp.py
+   ```
+
+5. **Gripper MCP server** (terminal C). `ARM_MCP_URL` makes each gripper command restore arm control before returning (see the notes below).
+
+   ```bash
+   cd tools/gripper && ROBOT_IP=192.168.56.101 ARM_MCP_URL=http://127.0.0.1:8765/mcp ../../.venv/bin/python server.py
+   ```
+
+6. **Scene server** (terminal D). This provides the objects to pick when `detector: sim`.
+
+   ```bash
+   python3 tools/sim_scene/scene_server.py
+   ```
+
+7. **3D view** (terminal E). RViz shows the arm, gripper, table and objects. The simulator's own view is the **Move** tab at <http://192.168.56.101:6080/vnc.html?autoconnect=true&resize=scale>.
+
+   ```bash
+   tools/viz/start_rviz.sh
+   ```
+
+8. **cobot-claw** (terminal F, no ROS setup needed). Type a request, or press Ctrl+Space / F9 to speak one if voice is enabled.
+
+   ```bash
+   cd /path/to/cobot-claw && .venv/bin/cobot-claw -c cobot.yaml
+   ```
+
+Order matters:
+
+- Start the driver (3) before the arm server (4).
+- The scene server (6) needs the driver and the emulator (2).
+- cobot-claw connects to the servers when it starts, so start it last, and restart it if you start a server later.
+
+To stop, press Ctrl+C in each terminal in reverse order, then run `docker stop ursim` if you also want to stop the simulator. Ctrl+C on `ros2 launch` sometimes leaves `robot_state_publisher` running, which publishes stale arm positions. Clean it up with `pkill -f robot_state_publisher`.
 
 #### Simulated objects: pick and place in the sim
 
