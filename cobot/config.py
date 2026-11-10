@@ -83,13 +83,14 @@ class VoiceConfig(BaseModel):
     enabled: bool = False
     key: str = "f9"                    # push-to-talk key at the prompt (prompt_toolkit key name)
     alt_key: str = "c-space"           # second key: works when F-keys are media keys (laptop Fn Lock off); "" = none
-    model: str = "small.en"            # faster-whisper model for commands (tiny.en/base.en/small.en/distil-small.en/medium.en)
+    model: str = "distil-small.en"     # faster-whisper model for commands (tiny.en/base.en/small.en/distil-small.en/medium.en)
     stop_model: str = "base.en"        # smaller, faster model for the spoken "stop" listener
     cpu_threads: int = 8
     auto_send: bool = False            # False: put the transcript in the prompt to check, Enter sends
     stop_while_running: bool = True    # listen for "stop" while a task runs (cancels it + stops the arm)
     device: str = ""                   # ALSA capture device for arecord ("" = default microphone)
-    silence_sec: float = 0.9           # pause that ends a command
+    silence_sec: float = 0.6           # pause that ends a command
+    early_start_sec: float = 0.25      # start transcribing at a pause this long; kept if speech doesn't resume (0 = off)
     wait_for_speech_sec: float = 6.0   # give up if nothing is said
     max_record_sec: float = 15.0
     min_level: float = 0.01            # minimum RMS counted as speech (raise in noisy rooms)

@@ -1,9 +1,11 @@
 """Voice input for the cobot-claw REPL, with speech-to-text running locally.
 
-- Push-to-talk: press the voice key (default F9) at the prompt, speak, and
-  pause. Recording stops after a short silence, or when the key is pressed
-  again. The transcript is put in the prompt to check and send with Enter,
-  or sent at once with voice.auto_send.
+- Push-to-talk: press the voice key (default F9) at the prompt and speak.
+  - Pause: the transcript is put in the prompt to check and send with Enter
+    (or sent at once with voice.auto_send).
+  - Press the key again instead: recording stops and the transcript is sent
+    at once, as if Enter was pressed. This also works while it is still
+    transcribing.
 - Spoken stop: while a task is running, a listener waits for "stop" (or
   "halt" / "freeze"). It cancels the task and brakes the arm (stop_motion: URScript stopj),
   without going through the AI. This is a convenience, not a safety function.
@@ -113,6 +115,7 @@ class VoiceInput:
         self.state = "loading"           # loading | ready | listening | transcribing | error
         self.message = ""                # last notice shown in the toolbar
         self.cancel = threading.Event()  # set to stop the current recording
+        self.send_now = False            # key pressed again: send the transcript at once
         self._models: dict[str, object] = {}
         self._lock = threading.Lock()
         self._loaded = threading.Event()
@@ -151,18 +154,26 @@ class VoiceInput:
 
     # ── audio ────────────────────────────────────────────────────────────────
     def _utterances(self, stop: threading.Event, silence_sec: float, max_sec: float,
-                    wait_sec: float | None):
-        """Yield utterances (float32 arrays) split on pauses. Ends when `stop`
-        is set, or after the first utterance / `wait_sec` of no speech if
-        wait_sec is given."""
+                    wait_sec: float | None, on_pause: Callable[[np.ndarray], object] | None = None,
+                    pause_sec: float = 0.0):
+        """Yield (audio, token) per utterance (audio: float32 array), split on
+        pauses. Ends when `stop` is set, or after the first utterance /
+        `wait_sec` of no speech if wait_sec is given.
+
+        With on_pause: called with the audio so far once `pause_sec` of a
+        pause has passed, before the pause is long enough to end the
+        utterance. Its return value comes back as the token if the utterance
+        then ends without more speech, and None otherwise."""
         mic = self._mic()
         q = mic.subscribe()
+        pause_frames = max(1, round(pause_sec * SAMPLE_RATE / FRAME))
         try:
             frames: list[np.ndarray] = []
             speaking = False
             draining = False   # after a cut at max_sec: wait for a pause before listening again
             loud_run = 0
             silent = 0
+            token = None       # on_pause result for the current pause
             started = time.monotonic()
             while not stop.is_set():
                 if mic.error:
@@ -189,20 +200,22 @@ class VoiceInput:
                     else:
                         frames = frames[-PREROLL_FRAMES:]
                 elif loud:
-                    silent = 0
+                    silent, token = 0, None             # speech resumed: early result is stale
                 else:
                     silent += 1
+                    if on_pause is not None and silent == pause_frames:
+                        token = on_pause(np.concatenate(frames))
                 cut = len(frames) * FRAME / SAMPLE_RATE >= max_sec
                 if speaking and (silent * FRAME / SAMPLE_RATE >= silence_sec or cut):
-                    yield np.concatenate(frames)
-                    frames, speaking, silent, loud_run = [], False, 0, 0
+                    yield np.concatenate(frames), (None if cut else token)
+                    frames, speaking, silent, loud_run, token = [], False, 0, 0, None
                     draining = cut
                     if wait_sec is not None:
                         return
                 if not speaking and wait_sec is not None and time.monotonic() - started > wait_sec:
                     return
             if speaking and frames and wait_sec is not None:
-                yield np.concatenate(frames)            # key pressed again mid-sentence
+                yield np.concatenate(frames), token     # key pressed again mid-sentence
         finally:
             mic.unsubscribe(q)
 
@@ -216,9 +229,36 @@ class VoiceInput:
     def record_utterance(self) -> np.ndarray | None:
         """Record one utterance for push-to-talk (blocking; run in a thread)."""
         self.cancel.clear()
-        for audio in self._utterances(self.cancel, self.cfg.silence_sec,
-                                      self.cfg.max_record_sec, wait_sec=self.cfg.wait_for_speech_sec):
+        for audio, _ in self._utterances(self.cancel, self.cfg.silence_sec,
+                                         self.cfg.max_record_sec, wait_sec=self.cfg.wait_for_speech_sec):
             return audio
+        return None
+
+    def listen_and_transcribe(self, on_recorded: Callable[[], None] | None = None) -> str | None:
+        """Record one utterance and return its transcript, or None if nothing
+        was said (blocking; run in a thread). on_recorded() is called when
+        recording ends.
+
+        Transcription starts early, at the first short pause
+        (early_start_sec), while the recorder keeps waiting for the full
+        silence_sec. If speech doesn't resume, that result is used, so the
+        text is ready sooner. If it does resume, the early result is dropped
+        and the whole utterance is transcribed once it ends."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.cancel.clear()
+        early = self.cfg.early_start_sec
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-stt") as pool:
+            on_pause = (lambda a: pool.submit(self.transcribe, a)) \
+                if 0 < early < self.cfg.silence_sec else None
+            for audio, future in self._utterances(
+                    self.cancel, self.cfg.silence_sec, self.cfg.max_record_sec,
+                    wait_sec=self.cfg.wait_for_speech_sec, on_pause=on_pause, pause_sec=early):
+                if on_recorded:
+                    on_recorded()
+                if future is None:
+                    future = pool.submit(self.transcribe, audio)
+                return future.result()
         return None
 
     # ── speech to text ───────────────────────────────────────────────────────
@@ -235,7 +275,7 @@ class VoiceInput:
         on_stop(transcript) when a stop command is heard."""
         model = self.cfg.stop_model or self.cfg.model
         try:
-            for audio in self._utterances(done, silence_sec=0.4, max_sec=3.0, wait_sec=None):
+            for audio, _ in self._utterances(done, silence_sec=0.4, max_sec=3.0, wait_sec=None):
                 if len(audio) >= 3.0 * SAMPLE_RATE - FRAME:
                     continue                            # cut at the cap: a long sentence, not "stop"
                 text = self.transcribe(audio, model)
@@ -267,8 +307,12 @@ class VoiceInput:
         if self.state == "error":
             return f" 🎙 {self.message}"
         if self.state == "listening":
-            return f" 🎙 listening… pause or press {key} again to finish"
+            if self.send_now:
+                return " 🎙 finishing… will send"
+            return f" 🎙 listening… pause to check the text, or press {key} again to send it"
         if self.state == "transcribing":
-            return " 🎙 transcribing…"
+            if self.send_now:
+                return " 🎙 transcribing… will send"
+            return f" 🎙 transcribing… press {key} to send it when ready"
         note = f"   {self.message}" if self.message else ""
         return f" 🎙 {key}: speak a command{note}"

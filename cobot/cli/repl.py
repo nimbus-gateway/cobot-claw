@@ -93,11 +93,14 @@ def _build_bindings(session: CobotSession | None = None) -> KeyBindings:
         keys = [k for k in (voice.cfg.key, voice.cfg.alt_key) if k]
 
         def _voice_key(event):
-            if voice.state == "listening":
-                voice.cancel.set()          # second press: finish now
+            # Second press while listening or transcribing: finish now and
+            # send the command as if Enter was pressed.
+            if voice.state in ("listening", "transcribing"):
+                voice.send_now = True
+                voice.cancel.set()
+                event.app.invalidate()
                 return
-            if voice.state == "transcribing":
-                return
+            voice.send_now = False
             event.app.create_background_task(_voice_to_prompt(event.app, voice, session))
 
         for k in keys:
@@ -143,13 +146,14 @@ async def _voice_to_prompt(app, voice, session: CobotSession) -> None:
     try:
         voice.state = "listening"
         app.invalidate()
-        audio = await loop.run_in_executor(None, voice.record_utterance)
-        if audio is None:
+        def _recorded() -> None:          # called from the recording thread
+            voice.state = "transcribing"
+            loop.call_soon_threadsafe(app.invalidate)
+
+        text = await loop.run_in_executor(None, voice.listen_and_transcribe, _recorded)
+        if text is None:
             voice.message = "didn't hear anything"
             return
-        voice.state = "transcribing"
-        app.invalidate()
-        text = await loop.run_in_executor(None, voice.transcribe, audio)
     except Exception as e:  # noqa: BLE001
         voice.message = f"voice error: {e}"
         return
@@ -165,7 +169,7 @@ async def _voice_to_prompt(app, voice, session: CobotSession) -> None:
         buf = app.current_buffer
         buf.text = text
         buf.cursor_position = len(text)
-        if voice.cfg.auto_send:
+        if voice.cfg.auto_send or voice.send_now:
             buf.validate_and_handle()
         else:
             voice.message = "check it, then Enter to send"
