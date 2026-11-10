@@ -202,6 +202,8 @@ cobot-claw run pick_place --dry-run   # preview steps without moving
 
 ### Running against URSim (no real robot)
 
+> **Just want to run the demo?** See [HOWTORUN-DEMO.md](HOWTORUN-DEMO.md) for short step-by-step instructions and how to load each scenario.
+
 You can run the whole stack against a simulated UR3e in Docker. You need Docker, ROS 2 Jazzy with `ur_robot_driver`, and a `cobot.yaml` whose robot `ip` is `192.168.56.101`.
 
 ```bash
