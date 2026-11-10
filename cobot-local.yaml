@@ -1,0 +1,66 @@
+# cobot-claw against a local Gemma 4 served by vLLM (OpenAI-compatible API),
+# instead of the Anthropic API. No API key needed.
+#   .venv/bin/cobot-claw -c cobot-local.yaml -r ur3e
+#   scripts/start_ursim_demo.sh --rviz -c cobot-local.yaml [--scene quality_sorting]
+
+llm:
+  provider: local                          # OpenAI-compatible endpoint (vLLM)
+  base_url: http://172.31.0.105:8000/v1
+  api_key: ""                              # vLLM runs without a key
+  # Gemma 4 thinks before every reply by default. Turning it off makes each
+  # call about 5x faster (~1 s instead of ~5 s) with the same answers here.
+  # Delete these lines to let it think.
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: false
+
+fleet:
+  - name: ur3e
+    model_type: ur3e
+    ip: 192.168.56.101                      # URSim UR3e (scripts/start_ursim_demo.sh)
+    arm_mcp_url: http://localhost:8765/mcp  # arm MCP server (tools/ure3/ur3e_arm_mcp.py)
+    gripper_mcp_url: http://localhost:8001/mcp  # gripper MCP server (tools/gripper/server.py)
+
+agents:
+  orchestrator:
+    model: gemma4                           # model id served by vLLM (GET /v1/models)
+  scenario:
+    model: gemma4
+  config:
+    model: gemma4
+  safety:
+    model: gemma4
+    poll_interval_sec: 1.0
+    alert_threshold: WARNING
+  artistic:
+    model: gemma4
+    system_prompt: ""
+    skills_path: ./cobot/agents/artistic_agent/skills
+    active_skills:
+      - choreography
+      - gesture
+      - collaborative
+
+  vision:
+    model: gemma4
+    detector: sim                           # objects come from the simulated scene
+    ik_solver: local
+    pick_x_offset_m: 0.0
+    pick_y_offset_m: 0.0
+    min_drop_z_m: 0.30
+    place_depth_offset_m: 0.02
+
+scenarios:
+  store_path: ./cobot/scenarios/store
+
+rag:
+  manuals_path: ./manuals
+  db_path: ./chroma_db
+  chunk_size: 512
+  chunk_overlap: 64
+
+observability:
+  enabled: false
+
+voice:
+  enabled: true          # Ctrl+Space at the prompt to speak a command; say "stop" during a task

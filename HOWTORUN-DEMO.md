@@ -62,6 +62,34 @@ view (RViz), and then the cobot-claw prompt in your terminal.
 To change scenario, stop the demo (below) and start it again with another
 `--scene`.
 
+### With a local model (Gemma 4) instead of Anthropic
+
+`cobot-local.yaml` runs every agent on a Gemma 4 model served by vLLM at
+`http://172.31.0.105:8000/v1`. It needs no API key. Add `-c cobot-local.yaml`
+to any start command:
+
+```bash
+scripts/start_ursim_demo.sh --rviz --scene quality_sorting -c cobot-local.yaml
+```
+
+Before starting, check that the model server is up. This should list `gemma4`:
+
+```bash
+curl -s http://172.31.0.105:8000/v1/models
+```
+
+In `cobot-local.yaml`:
+
+- `llm.base_url` is the server address, and `model: gemma4` is the model
+  name it serves. Change these to use another vLLM or Ollama server.
+- `llm.extra_body` turns Gemma's thinking off, so each reply takes about 1 s
+  instead of about 5 s. Delete it to let the model think.
+- The rest (robot, scene, voice) is the same as `cobot.yaml`.
+
+The vLLM server needs tool calling turned on (`--enable-auto-tool-choice`
+with a tool-call parser) and a reasoning parser, or the model's thinking
+shows up in its answers.
+
 ## 3. What to say
 
 Type at the `>` prompt and press Enter, or speak (see Voice below).

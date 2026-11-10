@@ -10,6 +10,9 @@ class LLMConfig(BaseModel):
     provider: str = "local"   # "local" (Ollama) | "openai" | "anthropic"
     base_url: str = "http://localhost:11434/v1"
     api_key: str = ""         # leave blank to use OPENAI_API_KEY / ANTHROPIC_API_KEY env vars
+    # Extra fields sent with every request to a local/OpenAI-compatible server,
+    # e.g. {"chat_template_kwargs": {"enable_thinking": false}} for Gemma 4 on vLLM.
+    extra_body: dict | None = None
 
 
 class RobotConfig(BaseModel):
