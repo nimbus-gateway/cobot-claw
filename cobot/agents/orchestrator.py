@@ -54,6 +54,8 @@ def build_orchestrator(cfg: CobotConfig) -> Agent:
         "→ run_vision_task with 'point to <object>'.\n\n"
         "• 'Where is X', 'what do you see', 'workspace check' "
         "→ run_vision_task\n\n"
+        "• 'Inspect X', 'sort the parts', 'quality check', 'move the good/bad parts', 'reset the scene' "
+        "→ run_vision_task with the request as given\n\n"
         "• Robot status, movements, tool control, running an EXISTING named scenario "
         "→ run_robotic_task\n\n"
         "• Create/save/teach a scenario, robot manuals, specs, safety questions "

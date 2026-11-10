@@ -319,6 +319,25 @@ Then ask, for example, "what objects are on the table?" or "pick up the blue cyl
 - Edit `scene.yaml` to change the layout. To reload it, restart the stack or call the scene server's `reset_scene` tool.
 - In the sim, the gripper server waits for each gripper script to finish and restores arm control through the arm MCP server (`ARM_MCP_URL`) before returning. Otherwise the next arm move races the gripper. Without `ARM_MCP_URL`, the server keeps its original behaviour.
 
+#### Scenes: quality sorting cell
+
+Other layouts live in [tools/sim_scene/scenes/](tools/sim_scene/scenes/). Load one at startup with `--scene`:
+
+```bash
+scripts/start_ursim_demo.sh --rviz --scene quality_sorting
+```
+
+**Quality sorting** ([quality_sorting.yaml](tools/sim_scene/scenes/quality_sorting.yaml)): six machined housings (part 1–6) sit in a blue incoming tray at the end of an infeed conveyor. An inspection camera checks each part, and the arm sorts it into the green pass bin or the red reject bin. Two parts are defective: a dark scratch shows on their top face.
+
+- **"Sort the parts in the incoming tray"** runs the whole job: for each part, inspect, pick, place in the pass or reject bin. Parts are spread over the bin floor. The reply lists what passed and what was rejected, and why. It takes a few minutes for six parts.
+- One step at a time: "inspect part 2", "put part 4 in the pass bin", "move part 5 to the reject bin".
+- Each part's result is hidden until it is inspected, as on a real line. In RViz an inspected part's label turns green (PASS) or red (FAIL).
+- **"Reset the scene"** opens the gripper, puts every part back in the tray and clears the results.
+- The conveyor and camera are drawn for context only (`fixtures:` in the scene file): the arm can pass through them.
+- Inspection, sorting and reset are vision-agent tools (`inspect_object`, `sort_parts`, `reset_scene`), available only with `detector: sim`.
+
+To make your own scene, copy a file in `scenes/`. Objects can start inside a container: give a position inside it and the object rests on its floor. Add `quality: pass|fail` and `defect:` to make a part inspectable.
+
 #### Voice commands
 
 cobot-claw can take spoken commands. Speech-to-text runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on the CPU, and the audio never leaves the machine. Install and enable it:

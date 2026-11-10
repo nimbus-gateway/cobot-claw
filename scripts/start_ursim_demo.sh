@@ -16,7 +16,10 @@
 #   http://192.168.56.101:6080/vnc.html?autoconnect=true&resize=scale
 #
 # Usage:
-#   scripts/start_ursim_demo.sh [--no-app] [--rviz] [-c path/to/cobot.yaml]
+#   scripts/start_ursim_demo.sh [--no-app] [--rviz] [--scene NAME] [-c path/to/cobot.yaml]
+#
+#   --scene NAME   load tools/sim_scene/scenes/NAME.yaml (or a path), e.g.
+#                  --scene quality_sorting. Default: tools/sim_scene/scene.yaml
 #
 # Ctrl-C (or exiting cobot-claw) stops the driver and the MCP servers.
 # The URSim container keeps running; stop it with:  docker stop ursim
@@ -28,7 +31,7 @@
 #     socket protocol on port 63352, so Gripper.script runs unchanged.
 #     Set EMU_OBJECT_POS=0-255 to make closing stop on a simulated part.
 #     Gripper state: docker exec ursim cat /tmp/robotiq_emulator.json
-#   - Scene layout: tools/sim_scene/scene.yaml (override with SCENE_FILE=...).
+#   - Scene layout: tools/sim_scene/scene.yaml (override with --scene or SCENE_FILE=...).
 
 set -euo pipefail
 
@@ -42,7 +45,8 @@ while [[ $# -gt 0 ]]; do
     --no-app) RUN_APP=false ;;
     --rviz)   RVIZ=true ;;
     -c)       CONFIG="$2"; shift ;;
-    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
+    --scene)  export SCENE_FILE="$2"; shift ;;
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
   shift
@@ -166,7 +170,7 @@ for _ in $(seq 1 30); do ss -ltn | grep -q ':8001 ' && break; sleep 1; done
 if ss -ltn | grep -q ':8010 '; then
   log "Port 8010 already in use — is another scene server running?"; exit 1
 fi
-log "Starting simulated scene server on :8010 (log: logs/ursim_scene.log)…"
+log "Starting simulated scene server on :8010 (scene: ${SCENE_FILE:-default}; log: logs/ursim_scene.log)…"
 python3 "$ROOT/tools/sim_scene/scene_server.py" > "$LOG_DIR/ursim_scene.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 30); do ss -ltn | grep -q ':8010 ' && break; sleep 1; done

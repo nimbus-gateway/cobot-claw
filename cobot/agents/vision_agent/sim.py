@@ -145,14 +145,16 @@ async def _sim_pick_object_impl(deps, description: str) -> dict[str, Any]:
     }
 
 
-async def sim_place_object(deps, cfg, place_description: str) -> dict[str, Any]:
+async def sim_place_object(deps, cfg, place_description: str,
+                           offset_xy: tuple[float, float] = (0.0, 0.0)) -> dict[str, Any]:
     try:
-        return await _sim_place_object_impl(deps, cfg, place_description)
+        return await _sim_place_object_impl(deps, cfg, place_description, offset_xy)
     except MoveFailed as e:
         return {"success": False, "simulated": True, "error": str(e)}
 
 
-async def _sim_place_object_impl(deps, cfg, place_description: str) -> dict[str, Any]:
+async def _sim_place_object_impl(deps, cfg, place_description: str,
+                                 offset_xy: tuple[float, float] = (0.0, 0.0)) -> dict[str, Any]:
     if deps.arm_mcp is None:
         return {"success": False, "error": "arm_mcp not wired — cannot move robot"}
     target = await sim_locate(deps, place_description)
@@ -162,7 +164,8 @@ async def _sim_place_object_impl(deps, cfg, place_description: str) -> dict[str,
                 "available": target.get("available")}
 
     arm, gripper = deps.arm_mcp, deps.gripper_mcp
-    plx, ply = target["center_m"]["x"], target["center_m"]["y"]
+    plx = target["center_m"]["x"] + offset_xy[0]
+    ply = target["center_m"]["y"] + offset_xy[1]
     plz = _above_top_z(target)
 
     current_joints: list[float] | None = None
@@ -232,3 +235,81 @@ async def sim_check_workspace(deps) -> dict[str, Any]:
         "message": "Simulated scene. Objects: " + ", ".join(
             f"{i['name']} at ({i['center_m']['x']:.2f}, {i['center_m']['y']:.2f})" for i in items),
     }
+
+
+async def sim_inspect_object(deps, description: str) -> dict[str, Any]:
+    """Quality inspection by the simulated cell's inspection camera."""
+    try:
+        res = await deps.sim_scene.call_tool("inspect_object", {"description": description})
+    except Exception as e:
+        return {"success": False, "error": f"Simulated scene unavailable: {e}"}
+    if not res.get("ok"):
+        return {"success": False, "error": res.get("message"), "available": res.get("available")}
+    if not res.get("inspectable"):
+        return {"success": False, "simulated": True, "label": res["name"], "error": res.get("message")}
+    verdict = res["result"]
+    return {
+        "success": True,
+        "simulated": True,
+        "label": res["name"],
+        "result": verdict,
+        "defect": res.get("defect"),
+        "summary": f"'{res['name']}' {'passed' if verdict == 'pass' else 'FAILED'} inspection"
+                   + (f": {res['defect']}" if res.get("defect") else ""),
+    }
+
+
+async def sim_sort_parts(deps, cfg, source: str, pass_target: str, fail_target: str) -> dict[str, Any]:
+    """Inspect every part in `source` and move it to `pass_target` or
+    `fail_target`. One part at a time: inspect, pick, place."""
+    src = await sim_locate(deps, source)
+    if not src.get("ok"):
+        return {"success": False, "error": src.get("message", f"Could not locate '{source}'"),
+                "available": src.get("available")}
+    for t in (pass_target, fail_target):
+        loc = await sim_locate(deps, t)
+        if not loc.get("ok") or loc.get("kind") != "container":
+            return {"success": False, "error": f"'{t}' is not a container in the scene",
+                    "available": loc.get("available")}
+
+    listing = await deps.sim_scene.call_tool("list_objects", {})
+    parts = [i["name"] for i in listing.get("items", [])
+             if i["kind"] == "object" and i.get("in_container") == src["name"]]
+    if not parts:
+        return {"success": True, "simulated": True, "sorted": [],
+                "summary": f"No parts in '{src['name']}' to sort"}
+
+    # Spread parts over the bin floor instead of stacking them on one spot.
+    slots = [(-0.03, -0.03), (0.03, -0.03), (-0.03, 0.03), (0.03, 0.03), (0.0, 0.0)]
+    used = {pass_target: 0, fail_target: 0}
+    sorted_parts, problems = [], []
+    for name in parts:
+        insp = await sim_inspect_object(deps, name)
+        if not insp.get("success"):
+            problems.append(f"{name}: inspection failed ({insp.get('error')})")
+            continue
+        target = pass_target if insp["result"] == "pass" else fail_target
+        pick = await sim_pick_object(deps, name)
+        if not pick.get("success"):
+            problems.append(f"{name}: pick failed ({pick.get('error') or pick.get('summary')})")
+            break                       # the arm may be holding nothing or something: stop here
+        offset = slots[used[target] % len(slots)]
+        used[target] += 1
+        place = await sim_place_object(deps, cfg, target, offset)
+        if not place.get("success"):
+            problems.append(f"{name}: place failed ({place.get('error')})")
+            break
+        sorted_parts.append({"part": name, "result": insp["result"], "defect": insp.get("defect"),
+                             "moved_to": target})
+
+    n_pass = sum(p["result"] == "pass" for p in sorted_parts)
+    n_fail = len(sorted_parts) - n_pass
+    summary = (f"Sorted {len(sorted_parts)} of {len(parts)} parts from '{src['name']}': "
+               f"{n_pass} passed → {pass_target}, {n_fail} rejected → {fail_target}")
+    rejects = [f"{p['part']} ({p['defect']})" for p in sorted_parts if p["result"] != "pass"]
+    if rejects:
+        summary += ". Rejected: " + "; ".join(rejects)
+    if problems:
+        summary += ". Problems: " + "; ".join(problems)
+    return {"success": not problems, "simulated": True, "sorted": sorted_parts,
+            "problems": problems, "summary": summary}

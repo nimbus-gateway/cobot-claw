@@ -1,0 +1,68 @@
+# Quality sorting cell: machined housings arrive on a conveyor into an
+# incoming tray. An inspection camera checks each part, and the UR3e sorts
+# it into the pass bin or the reject bin.
+#
+# Start with:  scripts/start_ursim_demo.sh --rviz --scene quality_sorting
+# Then ask:    "sort the parts in the incoming tray"
+#              "inspect part 2", "put part 4 in the pass bin", ...
+#
+# Coordinates are metres in the UR base frame; the table top is z = 0.
+# Picks work about 0.20–0.40 m from the base. The quality of each part is
+# hidden from cobot-claw until it inspects the part (inspect_object).
+
+title: Quality sorting cell
+
+gripper:
+  grasp_depth_m: 0.14       # tool0 flange -> centre of the finger pads
+  stroke_m: 0.085           # fully open jaw width
+  capture_xy_m: 0.03
+
+table:
+  size_m: [1.0, 1.1]
+  center_m: [0.0, 0.1]
+
+containers:
+  - name: incoming tray
+    size_m: [0.22, 0.15, 0.03]   # low walls so the fingers reach the parts
+    wall_m: 0.006
+    color: blue
+    position_m: [0.0, 0.30]
+    aliases: [tote, input, conveyor tray]
+
+  - name: pass bin
+    size_m: [0.14, 0.14, 0.07]
+    color: green
+    position_m: [0.27, 0.08]
+    aliases: [good, accepted, ok bin]
+
+  - name: reject bin
+    size_m: [0.14, 0.14, 0.07]
+    color: red
+    position_m: [-0.27, 0.08]
+    aliases: [fail, failed, scrap, defect bin, nok bin]
+
+# Six aluminium housings in a 3 x 2 grid inside the incoming tray.
+objects:
+  - {name: part 1, shape: box, size_m: [0.035, 0.035, 0.03], color: grey, position_m: [-0.065, 0.27], aliases: [housing], quality: pass}
+  - {name: part 2, shape: box, size_m: [0.035, 0.035, 0.03], color: grey, position_m: [0.0, 0.27], aliases: [housing], quality: fail, defect: crack across the top face}
+  - {name: part 3, shape: box, size_m: [0.035, 0.035, 0.03], color: grey, position_m: [0.065, 0.27], aliases: [housing], quality: pass}
+  - {name: part 4, shape: box, size_m: [0.035, 0.035, 0.03], color: grey, position_m: [-0.065, 0.33], aliases: [housing], quality: pass}
+  - {name: part 5, shape: box, size_m: [0.035, 0.035, 0.03], color: grey, position_m: [0.0, 0.33], aliases: [housing], quality: fail, defect: deep scratch on the sealing face}
+  - {name: part 6, shape: box, size_m: [0.035, 0.035, 0.03], color: grey, position_m: [0.065, 0.33], aliases: [housing], quality: pass}
+
+# Equipment drawn for context only: not pickable, no collisions.
+fixtures:
+  - name: infeed conveyor
+    label_m: [0.0, 0.62, 0.09]
+    parts:
+      - {center_m: [0.0, 0.60, 0.025], size_m: [0.16, 0.30, 0.05], color: black}         # frame
+      - {center_m: [0.0, 0.60, 0.051], size_m: [0.13, 0.30, 0.003], color: grey}         # belt
+      - {center_m: [0.075, 0.60, 0.06], size_m: [0.01, 0.30, 0.02], color: yellow}       # guide rails
+      - {center_m: [-0.075, 0.60, 0.06], size_m: [0.01, 0.30, 0.02], color: yellow}
+  - name: inspection camera
+    label_m: [0.17, 0.46, 0.50]
+    parts:
+      - {shape: cylinder, center_m: [0.17, 0.46, 0.22], size_m: [0.025, 0.44], color: grey}   # post
+      - {center_m: [0.12, 0.42, 0.44], size_m: [0.11, 0.02, 0.02], color: grey, yaw: 0.68}   # arm
+      - {center_m: [0.07, 0.38, 0.44], size_m: [0.05, 0.04, 0.035], color: black}           # camera head
+      - {shape: cylinder, center_m: [0.07, 0.38, 0.42], size_m: [0.025, 0.01], color: blue, alpha: 0.8}  # lens

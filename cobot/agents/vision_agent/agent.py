@@ -154,6 +154,10 @@ _DEFAULT_VISION_PROMPT = (
     "- User says 'point to', 'show me', 'indicate', 'hover over' an object → call point_to_object().\n"
     "- User says 'where is X', 'find X' → call locate_object() once.\n"
     "- User says 'what do you see', 'what is on the table', 'workspace check' → call check_workspace_clear() once.\n"
+    "- User says 'inspect X', 'check X for defects', 'is X good' → call inspect_object() once.\n"
+    "- User says 'sort the parts', 'run quality sorting', 'inspect and sort' → call sort_parts() ONCE. It inspects,\n"
+    "  picks and places every part itself; do not call pick/place/inspect for the same parts.\n"
+    "- User says 'reset the scene', 'put the parts back' → call reset_scene() once.\n"
     "- Do NOT call capture_scene() — it is called automatically by locate_object().\n"
     "Never generate YAML scenario files — that is the Config Agent's responsibility.\n"
     "If tool results say simulated=True you are driving a simulated cell (URSim): objects come\n"
@@ -596,6 +600,56 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
             "hover_z":    hover_z,
             "summary":    f"Pointing at '{det.get('label', description)}' at ({bx:.3f},{by:.3f},{bz:.3f}), hovering at z={hover_z:.3f}",
         }
+
+    @agent.tool
+    async def inspect_object(ctx: RunContext[VisionAgentDeps], description: str) -> dict:
+        """
+        Quality-inspect one part with the cell's inspection camera: returns
+        result "pass" or "fail" and the defect found. Simulated cell only.
+
+        Args:
+            description: the part, e.g. 'part 3'.
+        """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_inspect_object(ctx.deps, description)
+        return {"success": False,
+                "error": "Quality inspection is only available in the simulated cell (detector: sim)"}
+
+    @agent.tool
+    async def sort_parts(
+        ctx: RunContext[VisionAgentDeps],
+        source: str = "incoming tray",
+        pass_target: str = "pass bin",
+        fail_target: str = "reject bin",
+    ) -> dict:
+        """
+        Quality sorting: inspect every part in `source`, then pick it and place
+        it in `pass_target` if it passes or `fail_target` if it fails, one part
+        at a time. Call once; it handles all the parts. Simulated cell only.
+
+        Args:
+            source: container holding the parts to sort (default 'incoming tray').
+            pass_target: container for good parts (default 'pass bin').
+            fail_target: container for defective parts (default 'reject bin').
+        """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_sort_parts(ctx.deps, ctx.deps.cfg, source, pass_target, fail_target)
+        return {"success": False,
+                "error": "Quality sorting is only available in the simulated cell (detector: sim)"}
+
+    @agent.tool
+    async def reset_scene(ctx: RunContext[VisionAgentDeps]) -> dict:
+        """
+        Simulated cell only: put every object back where the scene starts and
+        clear inspection results. Opens the gripper first so nothing stays held.
+        """
+        if ctx.deps.sim_scene is None:
+            return {"success": False, "error": "There is no simulated scene to reset (detector is not 'sim')"}
+        if ctx.deps.gripper_mcp is not None:
+            await ctx.deps.gripper_mcp.call_tool("open", {"speed": 100, "force": 100})
+        res = await ctx.deps.sim_scene.call_tool("reset_scene", {})
+        return {"success": bool(res.get("ok")), "simulated": True,
+                "summary": "Scene reset: " + ", ".join(res.get("items", []))}
 
     @agent.tool
     async def check_workspace_clear(ctx: RunContext[VisionAgentDeps]) -> dict:

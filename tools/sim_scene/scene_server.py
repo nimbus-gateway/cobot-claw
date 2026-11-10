@@ -13,9 +13,14 @@ Gives cobot-claw objects to pick when there's no camera:
 - Tells the Robotiq emulator about the object (SET SOB <pos>), so closing
   stops at the object's width and reports "object detected", like a real
   grasp.
-- Serves MCP tools (list_objects, locate_object, reset_scene) that
-  cobot-claw's vision agent uses in place of the camera when
-  agents.vision.detector is "sim".
+- Serves MCP tools (list_objects, locate_object, inspect_object,
+  reset_scene) that cobot-claw's vision agent uses in place of the camera
+  when agents.vision.detector is "sim".
+- Quality inspection: objects can carry a hidden quality result (pass, or
+  fail with a defect). inspect_object reveals it, as an inspection camera
+  would, and RViz then labels the part PASS or FAIL.
+- Fixtures: equipment drawn for context (conveyor, camera, machine). They
+  can't be picked and objects don't rest on them.
 
 No physics: objects don't tip, slide or collide.
 
@@ -26,7 +31,7 @@ Run with the system ROS Python (needs rclpy, tf2_ros, mcp, pyyaml):
     python3 tools/sim_scene/scene_server.py
 
 Environment:
-    SCENE_FILE   scene layout (default: scene.yaml next to this file)
+    SCENE_FILE   scene layout: a path, or a name in scenes/ (default: scene.yaml next to this file)
     SCENE_PORT   MCP port (default 8010)
     EMU_HOST     gripper emulator host (default 192.168.56.101)
     EMU_PORT     gripper emulator port (default 63352)
@@ -58,7 +63,18 @@ from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 HERE = Path(__file__).resolve().parent
-SCENE_FILE = Path(os.getenv("SCENE_FILE", HERE / "scene.yaml"))
+
+
+def _scene_path(value: str) -> Path:
+    """A path, or a scene name such as "quality_sorting" (scenes/<name>.yaml)."""
+    p = Path(value)
+    if p.exists():
+        return p
+    named = HERE / "scenes" / f"{value.removesuffix('.yaml')}.yaml"
+    return named if named.exists() else p
+
+
+SCENE_FILE = _scene_path(os.getenv("SCENE_FILE", str(HERE / "scene.yaml")))
 SCENE_PORT = int(os.getenv("SCENE_PORT", "8010"))
 EMU_HOST = os.getenv("EMU_HOST", "192.168.56.101")
 EMU_PORT = int(os.getenv("EMU_PORT", "63352"))
@@ -72,6 +88,7 @@ COLORS = {
     "gray": (0.55, 0.55, 0.58), "brown": (0.5, 0.33, 0.2),
 }
 SHAPE_WORDS = {"box": ["block", "cube", "brick"], "cylinder": ["cylinder", "can", "tube", "bottle"]}
+WORD_RE = r"[a-z0-9]+"           # digits count, so "part 3" picks part 3
 STOPWORDS = {"the", "a", "an", "on", "in", "into", "of", "to", "and", "please", "object", "thing"}
 
 
@@ -90,6 +107,9 @@ class Item:
     wall: float = 0.006
     aliases: list[str] = field(default_factory=list)
     held: bool = False
+    quality: str | None = None    # hidden result: "pass" | "fail" (None = not an inspected part)
+    defect: str = ""              # what an inspection finds on a failed part
+    inspected: bool = False
 
     @property
     def height(self) -> float:
@@ -104,10 +124,10 @@ class Item:
         return min(self.footprint)
 
     def words(self) -> set[str]:
-        w = set(re.findall(r"[a-z]+", self.name.lower()))
+        w = set(re.findall(WORD_RE, self.name.lower()))
         w.add(self.color.lower())
         for a in self.aliases:
-            w.update(re.findall(r"[a-z]+", a.lower()))
+            w.update(re.findall(WORD_RE, a.lower()))
         if self.kind == "object":
             w.update(SHAPE_WORDS.get(self.shape, []))
         return w
@@ -127,6 +147,12 @@ class Item:
         }
         if self.kind == "container":
             d["floor_z_m"] = round(self.z - self.height / 2 + self.wall, 4)
+        if self.quality is not None:
+            d["inspected"] = self.inspected
+            if self.inspected:          # hidden until inspected, as on a real line
+                d["quality"] = self.quality
+                if self.defect:
+                    d["defect"] = self.defect
         return d
 
 
@@ -146,17 +172,8 @@ class Scene:
             self.capture_xy = float(g.get("capture_xy_m", 0.03))
             self.table_size = t.get("size_m", [1.0, 1.0])
             self.table_center = t.get("center_m", [0.0, 0.0])
+            self.title = cfg.get("title", "")
             self.items: list[Item] = []
-            for o in cfg.get("objects", []):
-                shape = o.get("shape", "box")
-                size = [float(v) for v in o["size_m"]]
-                h = size[1] if shape == "cylinder" else size[2]
-                self.items.append(Item(
-                    name=o["name"], kind="object", shape=shape, size=size,
-                    color=o.get("color", "grey"), x=float(o["position_m"][0]),
-                    y=float(o["position_m"][1]), z=h / 2, yaw=float(o.get("yaw", 0.0)),
-                    aliases=o.get("aliases", []),
-                ))
             for c in cfg.get("containers", []):
                 size = [float(v) for v in c["size_m"]]
                 self.items.append(Item(
@@ -165,6 +182,22 @@ class Scene:
                     y=float(c["position_m"][1]), z=size[2] / 2,
                     wall=float(c.get("wall_m", 0.006)), aliases=c.get("aliases", []),
                 ))
+            for o in cfg.get("objects", []):
+                shape = o.get("shape", "box")
+                size = [float(v) for v in o["size_m"]]
+                h = size[1] if shape == "cylinder" else size[2]
+                x, y = float(o["position_m"][0]), float(o["position_m"][1])
+                q = o.get("quality")
+                self.items.append(Item(
+                    name=o["name"], kind="object", shape=shape, size=size,
+                    color=o.get("color", "grey"), x=x, y=y,
+                    z=self.support_z(x, y) + h / 2,   # objects may start inside a tray
+                    yaw=float(o.get("yaw", 0.0)), aliases=o.get("aliases", []),
+                    quality=str(q).lower() if q is not None else None,
+                    defect=o.get("defect", ""),
+                ))
+            # Fixtures: drawn only. Each is a list of boxes/cylinders.
+            self.fixtures: list[dict] = cfg.get("fixtures", [])
             self.held: Item | None = None
             self.held_rel: np.ndarray | None = None
 
@@ -176,7 +209,7 @@ class Scene:
         return max(0, min(250, round(255 * (1 - w / self.stroke))))
 
     def match(self, description: str) -> tuple[Item | None, list[str]]:
-        tokens = {t for t in re.findall(r"[a-z]+", description.lower()) if t not in STOPWORDS}
+        tokens = {t for t in re.findall(WORD_RE, description.lower()) if t not in STOPWORDS}
         best, best_score = None, 0.0
         with self.lock:
             for it in self.items:
@@ -187,6 +220,15 @@ class Scene:
                     best, best_score = it, score
             names = [i.name for i in self.items]
         return best, names
+
+    def container_at(self, x: float, y: float) -> "Item | None":
+        for c in self.items:
+            if c.kind != "container":
+                continue
+            hx, hy = c.size[0] / 2 - c.wall, c.size[1] / 2 - c.wall
+            if abs(x - c.x) <= hx and abs(y - c.y) <= hy:
+                return c
+        return None
 
     def support_z(self, x: float, y: float) -> float:
         """Height an object dropped at (x, y) comes to rest on."""
@@ -371,6 +413,16 @@ class SceneNode(Node):
                 color(m, it.color)
                 out.markers.append(m)
                 mid += 1
+                if it.quality == "fail":
+                    # The flaw itself: a dark scratch across the top face.
+                    d = mk(mid, Marker.CUBE, "defects")
+                    d.pose.position.x, d.pose.position.y = it.x, it.y
+                    d.pose.position.z = it.z + it.height / 2 + 0.0008
+                    set_yaw(d, it.yaw + 0.6)
+                    d.scale.x, d.scale.y, d.scale.z = it.grip_width * 0.8, 0.003, 0.0015
+                    color(d, "black")
+                    out.markers.append(d)
+                    mid += 1
             else:
                 sx, sy, h = it.size
                 w = it.wall
@@ -395,8 +447,35 @@ class SceneNode(Node):
             label.scale.z = 0.022
             label.text = it.name + (" (held)" if it.held else "")
             label.color.r = label.color.g = label.color.b = label.color.a = 1.0
+            if it.inspected and it.quality:
+                label.text += "  PASS" if it.quality == "pass" else "  FAIL"
+                color(label, "green" if it.quality == "pass" else "red")
             out.markers.append(label)
             mid += 1
+        for fx in s.fixtures:
+            for part in fx.get("parts", []):
+                shape = part.get("shape", "box")
+                m = mk(mid, Marker.CYLINDER if shape == "cylinder" else Marker.CUBE, "fixtures")
+                m.pose.position.x, m.pose.position.y, m.pose.position.z = part["center_m"]
+                set_yaw(m, float(part.get("yaw", 0.0)))
+                sz = part["size_m"]
+                if shape == "cylinder":
+                    m.scale.x = m.scale.y = sz[0]
+                    m.scale.z = sz[1]
+                else:
+                    m.scale.x, m.scale.y, m.scale.z = sz
+                color(m, part.get("color", fx.get("color", "grey")), float(part.get("alpha", 1.0)))
+                out.markers.append(m)
+                mid += 1
+            if fx.get("label_m"):
+                label = mk(mid, Marker.TEXT_VIEW_FACING, "labels")
+                label.pose.position.x, label.pose.position.y, label.pose.position.z = fx["label_m"]
+                label.scale.z = 0.022
+                label.text = fx.get("name", "")
+                label.color.r = label.color.g = label.color.b = 0.8
+                label.color.a = 1.0
+                out.markers.append(label)
+                mid += 1
         return out
 
 
@@ -413,8 +492,17 @@ def list_objects() -> dict[str, Any]:
         return {
             "ok": True,
             "frame": FRAME,
-            "items": [it.describe(SCENE.grasp_depth) for it in SCENE.items],
+            "scene": SCENE.title,
+            "items": [_describe(it) for it in SCENE.items],
         }
+
+
+def _describe(it: Item) -> dict[str, Any]:
+    d = it.describe(SCENE.grasp_depth)
+    if it.kind == "object" and not it.held:
+        c = SCENE.container_at(it.x, it.y)
+        d["in_container"] = c.name if c else None
+    return d
 
 
 @mcp.tool()
@@ -426,12 +514,32 @@ def locate_object(description: str) -> dict[str, Any]:
     if item is None:
         return {"ok": False, "message": f"No object matches '{description}'", "available": names}
     with SCENE.lock:
-        return {"ok": True, **item.describe(SCENE.grasp_depth)}
+        return {"ok": True, **_describe(item)}
+
+
+@mcp.tool()
+def inspect_object(description: str) -> dict[str, Any]:
+    """Inspect a part with the cell's inspection camera and report whether it
+    passes quality control, and the defect if it fails. Works on a part
+    lying in the scene or held by the gripper."""
+    item, names = SCENE.match(description)
+    if item is None:
+        return {"ok": False, "message": f"No object matches '{description}'", "available": names}
+    with SCENE.lock:
+        if item.kind != "object":
+            return {"ok": False, "message": f"'{item.name}' is a container, not a part"}
+        if item.quality is None:
+            return {"ok": True, "name": item.name, "inspectable": False,
+                    "message": f"'{item.name}' has no quality-control result in this scene"}
+        item.inspected = True
+        return {"ok": True, "name": item.name, "inspectable": True,
+                "result": item.quality, "defect": item.defect or None}
 
 
 @mcp.tool()
 def reset_scene() -> dict[str, Any]:
-    """Reload scene.yaml and put every object back in its starting position.
+    """Reload the scene file and put every object back in its starting position
+    (inspection results are cleared too).
     Open the gripper first if it is holding something."""
     SCENE.load()
     return {"ok": True, "items": [i.name for i in SCENE.items]}
@@ -443,7 +551,8 @@ def main() -> None:
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     threading.Thread(target=executor.spin, daemon=True).start()
-    print(f"[sim-scene] {len(SCENE.items)} items from {SCENE_FILE}; MCP on :{SCENE_PORT}", flush=True)
+    print(f"[sim-scene] {SCENE.title or SCENE_FILE.stem}: {len(SCENE.items)} items from {SCENE_FILE}; "
+          f"MCP on :{SCENE_PORT}", flush=True)
     try:
         mcp.run(transport="streamable-http")
     finally:
