@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from cobot.config import CobotConfig, RobotConfig
+from cobot.tasklog import TaskLog
 from cobot.agents.orchestrator import OrchestratorDeps
 from pydantic_ai.messages import ModelMessage
 
@@ -33,6 +34,9 @@ class CobotSession:
     message_history: list[ModelMessage] = field(default_factory=list)
     mcp_status: dict[str, bool] = field(default_factory=dict)  # {"arm": True, "gripper": False, ...}
     voice: object | None = None  # cobot.cli.voice.VoiceInput when voice.enabled
+    task_log: TaskLog = field(default_factory=TaskLog)   # what the robot is doing / has done
+    current_task: object | None = None   # asyncio.Task of the request being worked on
+    task_status: str = ""                # short status for the bottom toolbar
 
     @property
     def robot_connected(self) -> bool:

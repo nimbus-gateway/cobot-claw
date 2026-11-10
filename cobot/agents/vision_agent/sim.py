@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from cobot.tasklog import log_event
 from cobot.agents.vision_agent.kinematics import (
     APPROACH_Z_OFFSET,
     LIFT_Z_OFFSET,
@@ -129,6 +130,7 @@ async def _sim_pick_object_impl(deps, description: str) -> dict[str, Any]:
     if j_lift is None:
         return {"success": False, "error": f"IK failed for lift ({bx:.3f},{by:.3f},{lift_z:.3f})"}
 
+    log_event(deps, "step", f"picking {obj['name']}", object=obj["name"])
     await _move(arm, "move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
     if gripper:
         await gripper.call_tool("open", {"speed": 100, "force": 100})
@@ -140,6 +142,10 @@ async def _sim_pick_object_impl(deps, description: str) -> dict[str, Any]:
 
     after = await sim_locate(deps, obj["name"])
     held = bool(after.get("held"))
+    if held:
+        log_event(deps, "step", f"picked {obj['name']}", object=obj["name"])
+    else:
+        log_event(deps, "problem", f"closed the gripper on {obj['name']} but didn't grasp it", object=obj["name"])
     return {
         "success": held,
         "label": obj["name"],
@@ -192,6 +198,7 @@ async def _sim_place_object_impl(deps, cfg, place_description: str,
     await _move(arm, "move_joints", {"joints": j_place, "speed": 0.3, "accel": 0.5})
     if gripper:
         await gripper.call_tool("open", {"speed": 100, "force": 100})
+    log_event(deps, "step", f"dropped it in {target['name']}", target=target["name"])
     await _move(arm, "move_joints", {"joints": j_place, "speed": 0.2, "accel": 0.4})
     await _move(arm, "move_named_pose", {"name": "home", "speed": 0.5, "accel": 0.8})
     return {
@@ -254,6 +261,11 @@ async def sim_inspect_object(deps, description: str) -> dict[str, Any]:
     if not res.get("inspectable"):
         return {"success": False, "simulated": True, "label": res["name"], "error": res.get("message")}
     verdict = res["result"]
+    if verdict == "pass":
+        log_event(deps, "result", f"{res['name']}: PASS", part=res["name"], result="pass")
+    else:
+        log_event(deps, "result", f"{res['name']}: FAIL, {res.get('defect') or 'defect found'}",
+                  part=res["name"], result="fail", defect=res.get("defect"))
     return {
         "success": True,
         "simulated": True,
@@ -285,6 +297,7 @@ async def sim_sort_parts(deps, cfg, source: str, pass_target: str, fail_target: 
         return {"success": True, "simulated": True, "sorted": [],
                 "summary": f"No parts in '{src['name']}' to sort"}
 
+    log_event(deps, "step", f"sorting {len(parts)} parts from {src['name']}: {', '.join(parts)}")
     # Spread parts over the bin floor instead of stacking them on one spot.
     slots = [(-0.03, -0.03), (0.03, -0.03), (-0.03, 0.03), (0.03, 0.03), (0.0, 0.0)]
     used = {pass_target: 0, fail_target: 0}
@@ -307,6 +320,8 @@ async def sim_sort_parts(deps, cfg, source: str, pass_target: str, fail_target: 
             break
         sorted_parts.append({"part": name, "result": insp["result"], "defect": insp.get("defect"),
                              "moved_to": target})
+        log_event(deps, "result", f"{name} sorted into {target} ({len(sorted_parts)} of {len(parts)} done)",
+                  part=name, moved_to=target)
 
     n_pass = sum(p["result"] == "pass" for p in sorted_parts)
     n_fail = len(sorted_parts) - n_pass
@@ -317,6 +332,8 @@ async def sim_sort_parts(deps, cfg, source: str, pass_target: str, fail_target: 
         summary += ". Rejected: " + "; ".join(rejects)
     if problems:
         summary += ". Problems: " + "; ".join(problems)
+        for p in problems:
+            log_event(deps, "problem", p)
     return {"success": not problems, "simulated": True, "sorted": sorted_parts,
             "problems": problems, "summary": summary}
 
@@ -369,6 +386,7 @@ async def sim_pack_items(deps, cfg, items: list[str], container: str) -> dict[st
         return {"success": False,
                 "error": f"'{box['name']}' has room for {len(slots) - used} more, asked for {len(chosen)}"}
 
+    log_event(deps, "step", f"packing {', '.join(chosen)} into {box['name']}")
     packed, problems = [], []
     for name in chosen:
         if objs[name].get("in_container") == box["name"]:
@@ -384,7 +402,10 @@ async def sim_pack_items(deps, cfg, items: list[str], container: str) -> dict[st
             problems.append(f"{name}: place failed ({place.get('error')})")
             break
         packed.append(name)
+        log_event(deps, "result", f"{name} packed into {box['name']}", item=name, box=box["name"])
 
+    for p in problems:
+        log_event(deps, "problem", p)
     summary = f"Packed {len(packed)} of {len(chosen)} into '{box['name']}': " + ", ".join(packed)
     if problems:
         summary += ". Problems: " + "; ".join(problems)

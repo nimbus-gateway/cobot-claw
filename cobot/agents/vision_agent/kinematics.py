@@ -16,6 +16,7 @@ Total: up to 8 candidate configurations per target pose.
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 
@@ -275,7 +276,7 @@ def robot_ik(x: float, y: float, z: float,
         result = resp.get("result", {}).get("structuredContent", {})
         if result.get("ok") and result.get("joints_rad"):
             joints = result["joints_rad"]
-            print(f"    [robot IK] joints={[round(j,4) for j in joints]}")
+            _ik_trace(f"    [robot IK] joints={[round(j,4) for j in joints]}")
             return joints
 
         print(f"    [robot IK] failed: {result.get('message','unknown')} — falling back to local")
@@ -287,12 +288,22 @@ def robot_ik(x: float, y: float, z: float,
 
 _ROBOT_IK_ERR_THRESHOLD = 0.050   # metres — robot IK results above this fall back to local
 
+# Per-move IK lines ("approach (x, y, z) → joints=[…]") flood the REPL while
+# a task's progress is printing; show them with COBOT_IK_VERBOSE=1. IK
+# failures and fallbacks always print.
+_IK_VERBOSE = os.getenv("COBOT_IK_VERBOSE", "") not in ("", "0", "false")
+
+
+def _ik_trace(msg: str) -> None:
+    if _IK_VERBOSE:
+        print(msg)
+
 def get_joints_for_pose(name: str, x: float, y: float, z: float,
                         q_seed: list[float] | None = None,
                         arm_mcp_url: str | None = None) -> list[float] | None:
     """Solve IK for a named pose. Uses robot MCP if arm_mcp_url provided, else local.
     If robot IK error exceeds threshold, falls back to local analytical IK."""
-    print(f"  {name}  ({x:.3f}, {y:.3f}, {z:.3f})")
+    _ik_trace(f"  {name}  ({x:.3f}, {y:.3f}, {z:.3f})")
     q_seed = _auto_seed(y, q_seed)
     solver_used = "local"
     robot_ik_fallback = False
@@ -309,8 +320,8 @@ def get_joints_for_pose(name: str, x: float, y: float, z: float,
                 solver_used = "local"
                 joints = ur3e_ik(x, y, z, q_seed)
             else:
-                print(f"    [robot IK] joints={[round(j, 4) for j in joints]}  "
-                      f"err={err * 1000:.1f}mm  z_tool={T[:3, 2].round(3).tolist()}")
+                _ik_trace(f"    [robot IK] joints={[round(j, 4) for j in joints]}  "
+                          f"err={err * 1000:.1f}mm  z_tool={T[:3, 2].round(3).tolist()}")
                 if _logfire:
                     _logfire.info("ik.solved", pose_name=name, x=x, y=y, z=z,
                                   solver_used=solver_used, fk_error_mm=round(err * 1000, 1),
@@ -322,8 +333,8 @@ def get_joints_for_pose(name: str, x: float, y: float, z: float,
     if joints:
         T   = ur3e_fk(joints)
         err = float(np.linalg.norm(T[:3, 3] - np.array([x, y, z])))
-        print(f"    → joints={[round(j, 4) for j in joints]}  "
-              f"err={err * 1000:.1f}mm  z_tool={T[:3, 2].round(3).tolist()}")
+        _ik_trace(f"    → joints={[round(j, 4) for j in joints]}  "
+                  f"err={err * 1000:.1f}mm  z_tool={T[:3, 2].round(3).tolist()}")
         if _logfire:
             _logfire.info("ik.solved", pose_name=name, x=x, y=y, z=z,
                           solver_used=solver_used, fk_error_mm=round(err * 1000, 1),

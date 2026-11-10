@@ -87,6 +87,23 @@ Type at the `>` prompt and press Enter, or speak (see Voice below).
 **Any scenario**
 - "Reset the scene": puts every object back where it started.
 
+### While the robot is working
+
+The prompt stays open during a task. Each step prints as it happens
+(✓ part 1: PASS, ✗ part 2: FAIL, crack across the top face, → part 2 sorted
+into reject bin, …), and the bottom line shows what the agent is doing.
+
+- **Ask about it at any time**: "what's wrong with the part you just put
+  away?", "how many are done?", "what's in shipping box 1?". A separate
+  observer agent answers from what the robot has done so far. It can look
+  but not act, so asking never disturbs the task.
+- **Asking it to do something else** while a task runs ("pick up the red
+  block") gets a reply that it's busy. Wait for the task, or cancel it.
+- **Cancel**: type `stop`, press **Esc** or **Ctrl+C**, or say "stop". The
+  task is cancelled and the arm brakes.
+- **Afterwards**, the main agent can answer from the same record: "why was
+  part 5 rejected?", "which parts passed?".
+
 ## 4. Voice
 
 With `voice.enabled: true`:

@@ -60,6 +60,7 @@ class AgentsConfig(BaseModel):
     safety: SafetyAgentConfig
     vision: VisionAgentConfig
     artistic: ArtisticAgentConfig = ArtisticAgentConfig(model="claude-sonnet-4-6")
+    observer: AgentModelConfig | None = None   # answers questions mid-task; None = use the safety model
 
 
 class ScenariosConfig(BaseModel):

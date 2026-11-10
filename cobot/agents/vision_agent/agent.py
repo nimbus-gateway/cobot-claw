@@ -36,6 +36,7 @@ class VisionAgentDeps:
     gripper_mcp: object | None = None   # MCPClient — injected at session startup
     camera_stream: object | None = None  # CameraStream — set when /vision-debug is active
     sim_scene: object | None = None     # MCPClient for tools/sim_scene — set when detector == "sim"
+    task_log: object | None = None      # cobot.tasklog.TaskLog — what the robot is doing, shown live
     _T_base_cam: np.ndarray | None = field(default=None, repr=False)
     # Cached frame from the last capture_scene call — reused by locate_object
     _frame: tuple | None = field(default=None, repr=False)   # (color, depth, ci, ds)

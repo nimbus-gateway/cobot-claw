@@ -27,6 +27,7 @@ class OrchestratorDeps:
     cfg: CobotConfig
     config_deps: ConfigAgentDeps | None = None
     vision_deps: VisionAgentDeps | None = None
+    task_log: object | None = None   # cobot.tasklog.TaskLog
 
     # Backward-compat: allow old code that passes scenario_deps= keyword
     @classmethod
@@ -61,6 +62,9 @@ def build_orchestrator(cfg: CobotConfig) -> Agent:
         "→ run_robotic_task\n\n"
         "• Create/save/teach a scenario, robot manuals, specs, safety questions "
         "→ run_config_task\n\n"
+        "• Questions about what the robot did or found ('why was part 2 rejected?', 'which parts "
+        "passed?', 'what happened?', 'what's in shipping box 1?') → get_task_log, and answer from it. "
+        "Don't re-run a robot task to answer a question.\n\n"
         "Never call robot hardware or camera directly.\n"
         "After a tool returns its result, immediately return that result as your "
         "final response. Do not call any tool more than once per user request."
@@ -91,6 +95,15 @@ def build_orchestrator(cfg: CobotConfig) -> Agent:
         """Delegate to the Vision Agent — object detection, 3D location, workspace check, AND creating new pick-and-place scenarios."""
         result = await _vision_agent.run(task_description, deps=ctx.deps.vision_deps)
         return str(result.output)
+
+    @agent.tool
+    async def get_task_log(ctx: RunContext[OrchestratorDeps], last_n: int = 80) -> dict:
+        """What the robot did this session, step by step: inspection results
+        (PASS/FAIL and the defect), parts picked and where they were placed,
+        items packed, problems, and any task still running."""
+        if ctx.deps.task_log is None:
+            return {"ok": False, "message": "No task log in this session"}
+        return ctx.deps.task_log.snapshot(last_n)
 
     @agent.tool
     async def run_config_task(

@@ -361,6 +361,16 @@ scripts/start_ursim_demo.sh --rviz --scene packing
 
 Copy a file in `scenes/`. Objects can start inside a container: give a position inside it and the object rests on its floor. Add `quality: pass|fail` and `defect:` to make a part inspectable, and `orders:` (box and products) for packing.
 
+#### Asking questions while the robot works
+
+The REPL keeps the prompt open while a task runs:
+
+- Progress prints live from a session task log ([tasklog.py](cobot/tasklog.py)): inspection results, picks, places, packed items, problems. The bottom toolbar shows the current step.
+- Anything typed during a task goes to a read-only **observer** agent ([observer.py](cobot/agents/observer.py)). It reads the task log, the simulated scene and the arm's joint state, and has no tools that move anything. Requests to act get "busy: wait or stop". Its model is `agents.observer.model`, or the safety agent's model if that isn't set.
+- `stop`, Esc, Ctrl+C or a spoken "stop" cancel the task and brake the arm (`stop_motion`). Before, Esc cancelled the agent but left the current arm move running.
+- After a task, the orchestrator's `get_task_log` tool answers follow-ups ("why was part 5 rejected?") from the same log.
+- Slash commands wait until the task finishes.
+
 #### Voice commands
 
 cobot-claw can take spoken commands. Speech-to-text runs locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on the CPU, and the audio never leaves the machine. Install and enable it:

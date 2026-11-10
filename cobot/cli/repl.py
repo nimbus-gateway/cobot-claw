@@ -5,6 +5,9 @@ Claude Code-style interface:
 - Welcome screen with robot info, agent table, and tips panels
 - Simple "> " prompt for natural language and slash commands
 - Tool calls/results streamed inline as the agent works
+- The prompt stays open while a task runs: progress prints above it, a
+  question goes to the read-only observer agent, and "stop" / Esc / Ctrl+C
+  cancels the task and brakes the arm
 - "? for shortcuts" bottom hint
 - Works in disconnected mode — NLP still available, robot tools return offline notice
 """
@@ -18,9 +21,11 @@ import time as _time
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.patch_stdout import patch_stdout
 
 from cobot.cli.commands.artistic import cmd_artistic
 from cobot.cli.commands.teach import cmd_teach
@@ -81,12 +86,34 @@ def _prompt_text() -> HTML:
     return HTML("<ansiwhite><b>&gt;</b></ansiwhite> ")
 
 
+def _task_running(session: CobotSession | None) -> bool:
+    t = getattr(session, "current_task", None)
+    return t is not None and not t.done()
+
+
+def _cancel_task(session: CobotSession, why: str) -> None:
+    """Cancel the running task and brake the arm (like a spoken "stop")."""
+    if not _task_running(session):
+        return
+    console.print(f"\n  [red]{why}: stopping the task and the arm[/red]")
+    stop = asyncio.ensure_future(_voice_stop_arm(session))
+    stop.add_done_callback(lambda f: console.print(f"  [dim]{f.result() if not f.exception() else f.exception()}[/dim]"))
+    session.current_task.cancel()
+
+
 def _build_bindings(session: CobotSession | None = None) -> KeyBindings:
     kb = KeyBindings()
+    busy = Condition(lambda: _task_running(session))
 
     @kb.add("c-c")
     def _(event):
+        if not event.current_buffer.text and _task_running(session):
+            _cancel_task(session, "Ctrl+C")
         event.current_buffer.reset()
+
+    @kb.add("escape", filter=busy, eager=True)
+    def _(event):
+        _cancel_task(session, "Esc")
 
     voice = getattr(session, "voice", None)
     if voice is not None:
@@ -164,7 +191,11 @@ async def _voice_to_prompt(app, voice, session: CobotSession) -> None:
     if not text:
         voice.message = "couldn't make out any words"
     elif is_stop_command(text):
-        voice.message = f"heard “{text}”: {await _voice_stop_arm(session)}"
+        if _task_running(session):
+            _cancel_task(session, f"Heard “{text}”")
+            voice.message = ""
+        else:
+            voice.message = f"heard “{text}”: {await _voice_stop_arm(session)}"
     else:
         buf = app.current_buffer
         buf.text = text
@@ -372,202 +403,140 @@ async def _handle_slash_command(text: str, session: CobotSession) -> None:
 # ---------------------------------------------------------------------------
 
 async def _handle_agent_message(text: str, session: CobotSession) -> None:
+    """Run one request through the orchestrator. Progress shows in the bottom
+    toolbar (session.task_status), not a spinner, so the prompt stays usable."""
     from cobot.agents.orchestrator import build_orchestrator
-    from rich.live import Live
-    from rich.spinner import Spinner
+    import json
 
     agent = build_orchestrator(session.cfg)
     deps = session.deps or _make_offline_deps(session)
     print_user_message(text)
+    session.task_status = "thinking…"
 
-    import json
+    async with agent.iter(text, deps=deps, message_history=session.message_history or None) as run:
+        async for node in run:
+            if hasattr(node, "model_response"):
+                parts = node.model_response.parts
+                has_tool_calls = any(hasattr(p, "args_as_dict") for p in parts)
+                for part in parts:
+                    if hasattr(part, "thinking"):                 # extended thinking block
+                        _print_reasoning(str(part.thinking))
+                    elif hasattr(part, "content") and isinstance(part.content, str) and has_tool_calls:
+                        reasoning = part.content.strip()          # text alongside tool calls
+                        if reasoning:
+                            _print_reasoning(reasoning)
+                    elif hasattr(part, "args_as_dict"):           # tool call
+                        session.task_status = f"{part.tool_name}…"
+                        print_tool_call(part.tool_name, part.args_as_dict())
 
-    live = Live(
-        Spinner("dots", text="[dim]thinking…[/dim]"),
-        console=console,
-        refresh_per_second=10,
-        transient=True,
-    )
-    live.start()
+            elif hasattr(node, "request"):
+                for part in node.request.parts:
+                    if hasattr(part, "tool_name") and hasattr(part, "content") and not hasattr(part, "args_as_dict"):
+                        content = getattr(part, "content", "")
+                        ok = True
+                        if isinstance(content, str):
+                            try:
+                                result_dict = json.loads(content)
+                                ok = result_dict.get("ok", True) if isinstance(result_dict, dict) else True
+                            except Exception:
+                                pass
+                        print_tool_result(ok, str(content)[:160], tool_name=part.tool_name)
+                        session.task_status = "thinking…"
 
-    try:
-        async with agent.iter(text, deps=deps, message_history=session.message_history or None) as run:
-            async for node in run:
-                if hasattr(node, "model_response"):
-                    parts = node.model_response.parts
-                    has_tool_calls = any(hasattr(p, "args_as_dict") for p in parts)
-
-                    for part in parts:
-                        # Extended thinking block (Claude extended thinking)
-                        if hasattr(part, "thinking"):
-                            live.stop()
-                            _print_reasoning(str(part.thinking))
-                            live = Live(
-                                Spinner("dots", text="[dim]thinking…[/dim]"),
-                                console=console,
-                                refresh_per_second=10,
-                                transient=True,
-                            )
-                            live.start()
-
-                        # Text alongside tool calls = inline reasoning before action
-                        elif hasattr(part, "content") and isinstance(part.content, str) and has_tool_calls:
-                            reasoning = part.content.strip()
-                            if reasoning:
-                                live.stop()
-                                _print_reasoning(reasoning)
-                                live = Live(
-                                    Spinner("dots", text="[dim]thinking…[/dim]"),
-                                    console=console,
-                                    refresh_per_second=10,
-                                    transient=True,
-                                )
-                                live.start()
-
-                        # Tool call
-                        elif hasattr(part, "args_as_dict"):
-                            live.stop()
-                            live = Live(
-                                Spinner("dots", text=f"[dim]{part.tool_name}…[/dim]"),
-                                console=console,
-                                refresh_per_second=10,
-                                transient=True,
-                            )
-                            live.start()
-                            print_tool_call(part.tool_name, part.args_as_dict())
-
-                elif hasattr(node, "request"):
-                    for part in node.request.parts:
-                        if hasattr(part, "tool_name") and hasattr(part, "content") and not hasattr(part, "args_as_dict"):
-                            live.stop()
-                            content = getattr(part, "content", "")
-                            ok = True
-                            if isinstance(content, str):
-                                try:
-                                    result_dict = json.loads(content)
-                                    ok = result_dict.get("ok", True) if isinstance(result_dict, dict) else True
-                                except Exception:
-                                    pass
-                            print_tool_result(ok, str(content)[:160], tool_name=part.tool_name)
-                            live = Live(
-                                Spinner("dots", text="[dim]thinking…[/dim]"),
-                                console=console,
-                                refresh_per_second=10,
-                                transient=True,
-                            )
-                            live.start()
-
-        output = run.result.output
-        session.message_history = run.result.all_messages()
-        console.print()
-        if isinstance(output, str):
-            print_agent_response(output)
-        else:
-            print_agent_response(str(output))
-        console.print()
-
-    except asyncio.CancelledError:
-        raise   # let _run_cancellable handle the message
-    except Exception as e:
-        print_error(str(e))
-    finally:
-        try:
-            live.stop()
-        except Exception:
-            pass
+    output = run.result.output
+    session.message_history = run.result.all_messages()
+    console.print()
+    print_agent_response(output if isinstance(output, str) else str(output))
+    console.print()
 
 
 # ---------------------------------------------------------------------------
-# ESC-to-cancel support
+# Running a request in the background
 # ---------------------------------------------------------------------------
 
-def _watch_for_escape(cancel_event: asyncio.Event, loop: asyncio.AbstractEventLoop) -> None:
-    """Background thread: set cancel_event when ESC is pressed."""
-    try:
-        if sys.platform == "win32":
-            import msvcrt
-            while not cancel_event.is_set():
-                if msvcrt.kbhit():
-                    ch = msvcrt.getwch()
-                    if ch == "\x1b":
-                        loop.call_soon_threadsafe(cancel_event.set)
-                        return
-                _time.sleep(0.05)
-        else:
-            import select
-            import termios
-            import tty
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                while not cancel_event.is_set():
-                    r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                    if r:
-                        ch = sys.stdin.read(1)
-                        if ch == "\x1b":
-                            loop.call_soon_threadsafe(cancel_event.set)
-                            return
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    except Exception:
-        pass
+_EVENT_STYLE = {"step": "dim", "problem": "red", "result": "cyan"}
 
 
-async def _run_cancellable(text: str, session: CobotSession) -> None:
-    """Run _handle_agent_message with ESC-to-cancel support."""
+def _print_event(ev) -> None:
+    """Live progress line for a task-log event."""
+    if ev.kind in ("task", "qa"):
+        return
+    if ev.kind == "result" and ev.data.get("result") == "pass":
+        console.print(f"  [green]✓ {ev.text}[/green]")
+    elif ev.kind == "result" and ev.data.get("result") == "fail":
+        console.print(f"  [red]✗ {ev.text}[/red]")
+    elif ev.kind == "problem":
+        console.print(f"  [red]! {ev.text}[/red]")
+    else:
+        mark = "→" if ev.kind == "result" else "·"
+        console.print(f"  [{_EVENT_STYLE.get(ev.kind, 'dim')}]{mark} {ev.text}[/]")
+
+
+async def _run_task(text: str, session: CobotSession) -> None:
+    """Run one request. Started as a background task: the prompt stays open."""
     loop = asyncio.get_running_loop()
-    cancel_event = asyncio.Event()
+    session.task_log.begin(text)
+    hint = "  [dim]Working… type a question any time · type stop or press Esc to cancel"
 
-    console.print("  [dim]Press ESC to stop[/dim]")
-
-    # Spoken "stop": cancel the task and hold the arm, without the agents.
+    # Spoken "stop": cancel the task and brake the arm, without the agents.
     voice = getattr(session, "voice", None)
     stop_listener_done = threading.Event()
-    hold_tasks: list[asyncio.Task] = []
     if voice is not None and voice.ready and voice.cfg.stop_while_running:
-        def _spoken_stop(heard: str) -> None:
-            console.print(f"\n  [red]Heard “{heard}”: stopping the arm[/red]")
-            hold_tasks.append(asyncio.create_task(_voice_stop_arm(session)))
-            cancel_event.set()
-
         threading.Thread(
             target=voice.listen_for_stop,
-            args=(stop_listener_done, lambda heard: loop.call_soon_threadsafe(_spoken_stop, heard)),
+            args=(stop_listener_done,
+                  lambda heard: loop.call_soon_threadsafe(_cancel_task, session, f"Heard “{heard}”")),
             daemon=True,
             name="voice-stop",
         ).start()
-        console.print("  [dim]…or say “stop”[/dim]")
+        hint += " (or say “stop”)"
+    console.print(hint + "[/dim]")
 
-    watcher = threading.Thread(
-        target=_watch_for_escape,
-        args=(cancel_event, loop),
-        daemon=True,
-    )
-    watcher.start()
-
-    task = asyncio.create_task(_handle_agent_message(text, session))
-
-    async def _wait_for_cancel():
-        await cancel_event.wait()
-        task.cancel()
-
-    cancel_task = asyncio.create_task(_wait_for_cancel())
-
+    outcome = "finished"
     try:
-        await task
+        await _handle_agent_message(text, session)
     except asyncio.CancelledError:
+        outcome = "stopped"
         console.print("\n  [yellow]Stopped.[/yellow]\n")
+    except Exception as e:  # noqa: BLE001
+        outcome = "failed"
+        print_error(str(e))
     finally:
         stop_listener_done.set()
-        for t in hold_tasks:
-            console.print(f"  [dim]{await t}[/dim]")
-        cancel_event.set()   # stop watcher thread
-        cancel_task.cancel()
-        try:
-            await cancel_task
-        except asyncio.CancelledError:
-            pass
+        session.task_status = ""
+        session.task_log.end(outcome)
+
+
+async def _ask_observer(text: str, session: CobotSession) -> None:
+    """Answer a question typed while a task runs, with the read-only observer."""
+    from cobot.agents.observer import ObserverDeps, build_observer
+
+    console.print(f"  [bold]you[/bold] [dim](while busy)[/dim]  {text}")
+    vd = session.deps.vision_deps if session.deps else None
+    deps = ObserverDeps(
+        task_log=session.task_log,
+        sim_scene=getattr(vd, "sim_scene", None),
+        arm_mcp=session.deps.robotic_deps.arm_mcp if session.deps else None,
+    )
+    try:
+        res = await build_observer(session.cfg).run(text, deps=deps)
+        answer = str(res.output).strip().replace("**", "")
+    except Exception as e:  # noqa: BLE001
+        print_error(f"observer: {e}")
+        return
+    console.print(f"  [magenta]observer[/magenta]  {answer}")
+    session.task_log.add("qa", f"Q: {text}  A: {answer}")
+    session.history.append({"role": "assistant", "content": answer})
+
+
+def _toolbar(session: CobotSession):
+    parts = []
+    if _task_running(session):
+        spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(_time.time() * 4) % 10]
+        parts.append(f" {spin} {session.task_status or 'working…'}   Esc / stop: cancel · type to ask about the task")
+    if session.voice is not None:
+        parts.append(session.voice.toolbar())
+    return "\n".join(parts) if parts else None
 
 
 # ---------------------------------------------------------------------------
@@ -596,33 +565,60 @@ async def run_repl(session: CobotSession) -> None:
                           'pip install -e ".[voice]"')
 
     history_path = Path.home() / ".cobot_history"
-    voice_toolbar = {}
+    extra = {}
     if session.voice is not None:
-        voice_toolbar = {
-            "bottom_toolbar": lambda: session.voice.toolbar(),
-            "rprompt": lambda: HTML(session.voice.rprompt()),   # on the prompt line itself
-            "refresh_interval": 0.5,
-        }
+        extra["rprompt"] = lambda: HTML(session.voice.rprompt())   # on the prompt line itself
     prompt_session: PromptSession = PromptSession(
         history=FileHistory(str(history_path)),
         completer=CobotCompleter(session),
         key_bindings=_build_bindings(session),
-        **voice_toolbar,
+        bottom_toolbar=lambda: _toolbar(session),
+        refresh_interval=0.25,
+        **extra,
         multiline=False,
     )
+    session.task_log.listeners.append(_print_event)
 
     console.print(" [dim]? for shortcuts[/dim]    [dim]/help for all commands[/dim]\n")
 
+    await _repl_loop(session, prompt_session)
+
+
+async def _repl_loop(session: CobotSession, prompt_session: PromptSession) -> None:
+    from cobot.cli.voice import is_stop_command
+
     while True:
         try:
-            user_input = await prompt_session.prompt_async(_prompt_text())
+            # patch_stdout: output from a running task prints above the prompt
+            # instead of breaking the line being typed. Only while prompting,
+            # so slash commands with their own live displays (/jog, /teach)
+            # write to the terminal directly.
+            with patch_stdout(raw=True):
+                user_input = await prompt_session.prompt_async(_prompt_text())
         except KeyboardInterrupt:
             continue
         except EOFError:
+            if _task_running(session):
+                _cancel_task(session, "Exit")
+                try:
+                    await session.current_task
+                except BaseException:  # noqa: BLE001
+                    pass
             break
 
         text = user_input.strip()
         if not text:
+            continue
+
+        if _task_running(session):
+            if text.lower() in ("stop", "/stop", "cancel") or is_stop_command(text):
+                _cancel_task(session, "Stop")
+            elif text.startswith("/") or text == "?":
+                console.print("  [yellow]A task is running: wait for it to finish, "
+                              "or type stop (or press Esc) to cancel it.[/yellow]")
+            else:
+                session.history.append({"role": "user", "content": text})
+                asyncio.create_task(_ask_observer(text, session))
             continue
 
         if text == "?":
@@ -642,4 +638,4 @@ async def run_repl(session: CobotSession) -> None:
         if text.startswith("/") or text == "?":
             await _handle_slash_command(text, session)
         else:
-            await _run_cancellable(text, session)
+            session.current_task = asyncio.create_task(_run_task(text, session))
