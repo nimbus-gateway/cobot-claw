@@ -1,0 +1,87 @@
+# Packing cell: product packs arrive on a conveyor into an accumulation
+# tray. The UR3e packs them into two open shipping boxes to fill customer
+# orders.
+#
+# Start with:  scripts/start_ursim_demo.sh --rviz --scene packing
+# Then ask:    "pack the orders"
+#              "what orders are open?", "pack a red pack and a blue pack
+#              into shipping box 2", ...
+#
+# The agent reads the orders, chooses which packs fill each one, and calls
+# pack_items once per shipping box. Packs are placed side by side in the
+# box, not dropped on one spot.
+#
+# Coordinates are metres in the UR base frame; the table top is z = 0.
+# Picks work about 0.20–0.40 m from the base.
+
+title: Packing cell
+
+gripper:
+  grasp_depth_m: 0.14
+  stroke_m: 0.085
+  capture_xy_m: 0.03
+
+table:
+  size_m: [1.0, 1.1]
+  center_m: [0.0, 0.1]
+
+containers:
+  - name: accumulation tray
+    size_m: [0.22, 0.15, 0.025]
+    wall_m: 0.006
+    color: black
+    position_m: [0.0, 0.30]
+    aliases: [infeed, conveyor end, input]
+
+  - name: shipping box 1
+    size_m: [0.18, 0.13, 0.07]
+    wall_m: 0.005
+    color: brown
+    position_m: [0.27, 0.06]
+    aliases: [carton 1, outbound box 1]
+
+  - name: shipping box 2
+    size_m: [0.18, 0.13, 0.07]
+    wall_m: 0.005
+    color: brown
+    position_m: [-0.27, 0.06]
+    aliases: [carton 2, outbound box 2]
+
+# Product packs: three products, two of each, in the accumulation tray.
+objects:
+  - {name: red pack 1,    shape: box, size_m: [0.05, 0.035, 0.035], color: red,    position_m: [-0.065, 0.27], aliases: [product]}
+  - {name: blue pack 1,   shape: box, size_m: [0.05, 0.035, 0.035], color: blue,   position_m: [0.0, 0.27],    aliases: [product]}
+  - {name: yellow pack 1, shape: box, size_m: [0.05, 0.035, 0.035], color: yellow, position_m: [0.065, 0.27],  aliases: [product]}
+  - {name: red pack 2,    shape: box, size_m: [0.05, 0.035, 0.035], color: red,    position_m: [-0.065, 0.33], aliases: [product]}
+  - {name: blue pack 2,   shape: box, size_m: [0.05, 0.035, 0.035], color: blue,   position_m: [0.0, 0.33],    aliases: [product]}
+  - {name: yellow pack 2, shape: box, size_m: [0.05, 0.035, 0.035], color: yellow, position_m: [0.065, 0.33],  aliases: [product]}
+
+# Customer orders: which products go into which shipping box.
+orders:
+  - name: order 1
+    ship_in: shipping box 1
+    items: {red pack: 1, blue pack: 1, yellow pack: 1}
+  - name: order 2
+    ship_in: shipping box 2
+    items: {red pack: 1, blue pack: 1}
+
+# Equipment drawn for context only: not pickable, no collisions.
+fixtures:
+  - name: infeed conveyor
+    label_m: [0.0, 0.62, 0.09]
+    parts:
+      - {center_m: [0.0, 0.60, 0.025], size_m: [0.16, 0.30, 0.05], color: black}
+      - {center_m: [0.0, 0.60, 0.051], size_m: [0.13, 0.30, 0.003], color: grey}
+      - {center_m: [0.075, 0.60, 0.06], size_m: [0.01, 0.30, 0.02], color: yellow}
+      - {center_m: [-0.075, 0.60, 0.06], size_m: [0.01, 0.30, 0.02], color: yellow}
+  - name: box flaps
+    parts:     # open flaps lying flat outward from each shipping box
+      - {center_m: [0.27, 0.165, 0.069], size_m: [0.18, 0.08, 0.002], color: brown, alpha: 0.9}
+      - {center_m: [0.27, -0.045, 0.069], size_m: [0.18, 0.08, 0.002], color: brown, alpha: 0.9}
+      - {center_m: [-0.27, 0.165, 0.069], size_m: [0.18, 0.08, 0.002], color: brown, alpha: 0.9}
+      - {center_m: [-0.27, -0.045, 0.069], size_m: [0.18, 0.08, 0.002], color: brown, alpha: 0.9}
+  - name: tape dispenser
+    label_m: [0.0, -0.20, 0.10]
+    parts:
+      - {center_m: [0.0, -0.20, 0.02], size_m: [0.10, 0.05, 0.04], color: grey}
+      - {shape: cylinder, center_m: [0.0, -0.20, 0.055], size_m: [0.06, 0.03], color: brown}

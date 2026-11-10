@@ -158,7 +158,12 @@ _DEFAULT_VISION_PROMPT = (
     "- User says 'sort the parts', 'run quality sorting', 'inspect and sort' → call sort_parts() ONCE. It inspects,\n"
     "  picks and places every part itself; do not call pick/place/inspect for the same parts.\n"
     "- User says 'reset the scene', 'put the parts back' → call reset_scene() once.\n"
-    "- Do NOT call capture_scene() — it is called automatically by locate_object().\n"
+    "- Packing: 'pack X and Y into box Z' → call pack_items() once with those items and the box.\n"
+    "  'Pack the orders', 'fill order 1', 'what orders are open' → call capture_scene() first: it lists\n"
+    "  the orders (what each needs and what is missing) and every product with where it is. Choose\n"
+    "  products that are NOT already in a shipping box, by their exact names, then call pack_items()\n"
+    "  once per order with exactly the missing products. Don't take a product another order needs.\n"
+    "- Do NOT call capture_scene() — it is called automatically by locate_object() (except for orders, see above).\n"
     "Never generate YAML scenario files — that is the Config Agent's responsibility.\n"
     "If tool results say simulated=True you are driving a simulated cell (URSim): objects come\n"
     "from a scene file, not the camera. Use the same tools; the object names from the scene\n"
@@ -636,6 +641,21 @@ def build_vision_agent(cfg: CobotConfig) -> Agent:
             return await _sim.sim_sort_parts(ctx.deps, ctx.deps.cfg, source, pass_target, fail_target)
         return {"success": False,
                 "error": "Quality sorting is only available in the simulated cell (detector: sim)"}
+
+    @agent.tool
+    async def pack_items(ctx: RunContext[VisionAgentDeps], items: list[str], container: str) -> dict:
+        """
+        Packing: pick each item and place it in `container` (e.g. 'shipping box 1'),
+        side by side on its floor. Call once per box with all its items.
+        Simulated cell only.
+
+        Args:
+            items: exact product names, e.g. ['red pack 1', 'blue pack 2'].
+            container: the box to pack them into.
+        """
+        if ctx.deps.sim_scene is not None:
+            return await _sim.sim_pack_items(ctx.deps, ctx.deps.cfg, items, container)
+        return {"success": False, "error": "Packing is only available in the simulated cell (detector: sim)"}
 
     @agent.tool
     async def reset_scene(ctx: RunContext[VisionAgentDeps]) -> dict:

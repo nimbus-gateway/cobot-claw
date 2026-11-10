@@ -63,10 +63,16 @@ def _above_top_z(obj: dict[str, Any]) -> float:
 async def sim_capture_scene(deps) -> dict[str, Any]:
     res = await deps.sim_scene.call_tool("list_objects", {})
     items = res.get("items", []) if isinstance(res, dict) else []
-    return {
+    out: dict[str, Any] = {
         "simulated": True,
-        "objects": [f"{i['name']} ({i['kind']})" for i in items],
+        "scene": res.get("scene", "") if isinstance(res, dict) else "",
+        "objects": [f"{i['name']} ({i['kind']}"
+                    + (f", in {i['in_container']}" if i.get("in_container") else "") + ")"
+                    for i in items],
     }
+    if isinstance(res, dict) and res.get("orders"):
+        out["orders"] = res["orders"]
+    return out
 
 
 async def sim_locate_object(deps, description: str) -> dict[str, Any]:
@@ -312,4 +318,75 @@ async def sim_sort_parts(deps, cfg, source: str, pass_target: str, fail_target: 
     if problems:
         summary += ". Problems: " + "; ".join(problems)
     return {"success": not problems, "simulated": True, "sorted": sorted_parts,
+            "problems": problems, "summary": summary}
+
+
+def _box_slots(box: dict[str, Any], footprint: tuple[float, float], gap: float = 0.01) -> list[tuple[float, float]]:
+    """Offsets from the box centre for a grid of items side by side on its floor."""
+    wall = 0.005
+    inner_x = box["size_m"][0] - 2 * wall
+    inner_y = box["size_m"][1] - 2 * wall
+    fx, fy = footprint
+    cols = max(1, int((inner_x + gap) // (fx + gap)))
+    rows = max(1, int((inner_y + gap) // (fy + gap)))
+    xs = [(i - (cols - 1) / 2) * (fx + gap) for i in range(cols)]
+    ys = [(j - (rows - 1) / 2) * (fy + gap) for j in range(rows)]
+    return [(x, y) for y in ys for x in xs]
+
+
+async def sim_pack_items(deps, cfg, items: list[str], container: str) -> dict[str, Any]:
+    """Pick each item and place it in `container`, side by side in a grid."""
+    box = await sim_locate(deps, container)
+    if not box.get("ok") or box.get("kind") != "container":
+        return {"success": False, "error": f"'{container}' is not a container in the scene",
+                "available": box.get("available")}
+    listing = await deps.sim_scene.call_tool("list_objects", {})
+    objs = {i["name"]: i for i in listing.get("items", []) if i["kind"] == "object"}
+    # Products already in this box or in any order's box are taken.
+    taken_in = {box["name"]} | {o["ship_in"] for o in listing.get("orders", [])}
+
+    # Resolve each description to a distinct item that isn't packed anywhere yet.
+    chosen: list[str] = []
+    for d in items:
+        if d in objs:
+            name = d
+        else:
+            words = set(d.lower().split())
+            cands = [n for n, i in objs.items() if words <= set(n.lower().split())
+                     and n not in chosen and i.get("in_container") not in taken_in]
+            name = cands[0] if cands else (await sim_locate(deps, d)).get("name")
+        if not name or name not in objs:
+            return {"success": False, "error": f"No product matches '{d}'", "available": list(objs)}
+        if name in chosen:
+            return {"success": False, "error": f"'{name}' was listed twice"}
+        chosen.append(name)
+
+    first = objs[chosen[0]]
+    fp = (first["size_m"][0], first["size_m"][1])
+    slots = _box_slots(box, fp)
+    used = sum(1 for i in objs.values() if i.get("in_container") == box["name"])
+    if used + len(chosen) > len(slots):
+        return {"success": False,
+                "error": f"'{box['name']}' has room for {len(slots) - used} more, asked for {len(chosen)}"}
+
+    packed, problems = [], []
+    for name in chosen:
+        if objs[name].get("in_container") == box["name"]:
+            packed.append(name)                 # already there
+            continue
+        pick = await sim_pick_object(deps, name)
+        if not pick.get("success"):
+            problems.append(f"{name}: pick failed ({pick.get('error') or pick.get('summary')})")
+            break
+        place = await sim_place_object(deps, cfg, box["name"], slots[used])
+        used += 1
+        if not place.get("success"):
+            problems.append(f"{name}: place failed ({place.get('error')})")
+            break
+        packed.append(name)
+
+    summary = f"Packed {len(packed)} of {len(chosen)} into '{box['name']}': " + ", ".join(packed)
+    if problems:
+        summary += ". Problems: " + "; ".join(problems)
+    return {"success": not problems, "simulated": True, "packed": packed,
             "problems": problems, "summary": summary}

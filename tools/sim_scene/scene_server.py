@@ -21,6 +21,8 @@ Gives cobot-claw objects to pick when there's no camera:
   would, and RViz then labels the part PASS or FAIL.
 - Fixtures: equipment drawn for context (conveyor, camera, machine). They
   can't be picked and objects don't rest on them.
+- Orders (packing scenes): which products go into which box. list_objects
+  reports each order with what is already packed and what is missing.
 
 No physics: objects don't tip, slide or collide.
 
@@ -198,6 +200,7 @@ class Scene:
                 ))
             # Fixtures: drawn only. Each is a list of boxes/cylinders.
             self.fixtures: list[dict] = cfg.get("fixtures", [])
+            self.orders: list[dict] = cfg.get("orders", [])
             self.held: Item | None = None
             self.held_rel: np.ndarray | None = None
 
@@ -494,7 +497,27 @@ def list_objects() -> dict[str, Any]:
             "frame": FRAME,
             "scene": SCENE.title,
             "items": [_describe(it) for it in SCENE.items],
+            **({"orders": _order_status()} if SCENE.orders else {}),
         }
+
+
+def _order_status() -> list[dict[str, Any]]:
+    """Each order with the products already in its box and those still missing.
+    A product counts if its name contains the order's product name
+    ("red pack 2" counts as a "red pack")."""
+    out = []
+    for o in SCENE.orders:
+        box = o["ship_in"]
+        inside = [it.name for it in SCENE.items if it.kind == "object" and not it.held
+                  and (c := SCENE.container_at(it.x, it.y)) is not None and c.name == box]
+        missing = {}
+        for product, qty in o.get("items", {}).items():
+            have = sum(product.lower() in n.lower() for n in inside)
+            if have < int(qty):
+                missing[product] = int(qty) - have
+        out.append({"order": o["name"], "ship_in": box, "wanted": o.get("items", {}),
+                    "packed": inside, "missing": missing, "complete": not missing})
+    return out
 
 
 def _describe(it: Item) -> dict[str, Any]:

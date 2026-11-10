@@ -336,7 +336,28 @@ scripts/start_ursim_demo.sh --rviz --scene quality_sorting
 - The conveyor and camera are drawn for context only (`fixtures:` in the scene file): the arm can pass through them.
 - Inspection, sorting and reset are vision-agent tools (`inspect_object`, `sort_parts`, `reset_scene`), available only with `detector: sim`.
 
-To make your own scene, copy a file in `scenes/`. Objects can start inside a container: give a position inside it and the object rests on its floor. Add `quality: pass|fail` and `defect:` to make a part inspectable.
+#### Scenes: packing cell
+
+```bash
+scripts/start_ursim_demo.sh --rviz --scene packing
+```
+
+**Packing** ([packing.yaml](tools/sim_scene/scenes/packing.yaml)): six product packs (red, blue and yellow, two of each) arrive on an infeed conveyor into an accumulation tray. Two open shipping boxes wait on either side of the arm, one per customer order:
+
+| Order | Ships in | Wants |
+|---|---|---|
+| order 1 | shipping box 1 | 1 red, 1 blue, 1 yellow pack |
+| order 2 | shipping box 2 | 1 red, 1 blue pack |
+
+- **"Pack the orders"**: the agent reads the open orders, chooses which packs fill each one, and packs them box by box. Packs sit side by side on the box floor. One yellow pack is left over.
+- Also: "what orders are open?", "pack a red pack and a blue pack into shipping box 2", "fill order 1".
+- Here the agent does the planning: the scene server reports each order with what's packed and what's missing, and the agent picks the products. A product already in a shipping box is never taken for another order.
+- The conveyor, open box flaps and tape dispenser are drawn for context only.
+- Packing is the `pack_items` vision-agent tool (sim only); orders are listed by `capture_scene`.
+
+#### Your own scenes
+
+Copy a file in `scenes/`. Objects can start inside a container: give a position inside it and the object rests on its floor. Add `quality: pass|fail` and `defect:` to make a part inspectable, and `orders:` (box and products) for packing.
 
 #### Voice commands
 
